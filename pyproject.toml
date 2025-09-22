@@ -1,19 +1,30 @@
-[project]
+[tool.poetry]
 name = "hybridai-nextg"
 version = "0.1.0"
 description = ""
-authors = [
-    {name = "Wilhelm Rauston",email = "wilhelm.rauston@gmail.com"}
-]
-license = {text = "Apache 2.0"}
+authors = ["Wilhelm Rauston <wilhelm.rauston@gmail.com>"]
+license = "Apache-2.0"
 readme = "README.md"
-requires-python = ">=3.13"
-dependencies = [
-    "numpy (>=2.3.3,<3.0.0)",
-    "pandas (>=2.3.2,<3.0.0)",
-    "scikit-learn (>=1.7.2,<2.0.0)"
-]
+packages = [{ include = "ain", from = "src" }]
 
+[tool.poetry.dependencies]
+python = ">=3.13,<3.14"
+numpy = ">=2.3.3,<3.0.0"
+pandas = ">=2.3.2,<3.0.0"
+scikit-learn = ">=1.7.2,<2.0.0"
+sktime = ">=0.38,<0.39"
+pydantic = ">=2.11.9,<3.0.0"
+loguru = ">=0.7.3,<0.8.0"
+pyarrow = ">=21.0.0,<22.0.0"
+numba = "^0.62.0"
+llvmlite = "^0.45.0"
+
+[tool.poetry.scripts]
+train_minirocket = "ain.pipeline.train_minirocket:main"
+run_loop = "ain.pipeline.run_loop:main"
+
+[tool.poetry.group.dev.dependencies]
+black = "^25.9.0"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
