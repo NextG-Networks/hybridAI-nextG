@@ -6,6 +6,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+.notebooks/*/.ipynb_checkpoints/
+notebooks/figures/*.png
+
 poetry.lock
 models/
 data/
