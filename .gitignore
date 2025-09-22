@@ -1,2 +1,11 @@
 .venv
 LICENSE
+
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+poetry.lock
+models/
+data/
