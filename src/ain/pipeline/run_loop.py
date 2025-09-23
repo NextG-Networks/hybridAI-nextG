@@ -48,7 +48,7 @@ async def _async_main():
     tasks = [
         asyncio.create_task(
             observer_run(
-                bus, kpi_stream(), model_path="models/minirocket.joblib", win=128
+                bus, kpi_stream(), model_path="src/ain/models/minirocket.joblib", win=128
             )
         ),
         asyncio.create_task(proposer_run(bus)),
