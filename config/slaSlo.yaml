@@ -1,0 +1,156 @@
+sla:
+  name: "HybridAI-NextG SLA"
+  description: "Performance, reliability, and efficiency objectives for AI-driven 5G/6G automation"
+  service: "HybridAI Network Manager"
+  owner: "nextg-lab@example.com"
+  start_date: "2025-01-01"
+  end_date: "2025-12-31"
+
+  slos:
+    # --- Performance ---
+    - name: "Latency"
+      description: "End-to-end network latency under AI-based configuration"
+      metric: "latency_ms"
+      requirement: "95% <= 20ms"
+      threshold: "20ms"
+      measurement_interval: "1m"
+      data_source: "5G Core Metrics / Prometheus"
+      alert:
+        severity: "critical"
+        notification_channels: ["slack", "email"]
+
+    - name: "Jitter"
+      description: "Variation in latency across packets"
+      metric: "jitter_ms"
+      requirement: "95% <= 5ms"
+      threshold: "5ms"
+      measurement_interval: "1m"
+      data_source: "Telemetry / Packet Capture"
+      alert:
+        severity: "high"
+        notification_channels: ["slack"]
+
+    - name: "Throughput"
+      description: "User-plane throughput after configuration adjustments"
+      metric: "throughput_mbps"
+      requirement: ">= 10Gbps"
+      threshold: "10Gbps"
+      measurement_interval: "5m"
+      data_source: "RAN/Core Telemetry"
+      alert:
+        severity: "medium"
+        notification_channels: ["slack"]
+
+    - name: "Packet Loss"
+      description: "Dropped packets during Hybrid AI reconfiguration events"
+      metric: "packet_loss_percent"
+      requirement: "<= 0.05%"
+      threshold: "0.05%"
+      measurement_interval: "1m"
+      data_source: "Netflow / Telemetry"
+      alert:
+        severity: "high"
+        notification_channels: ["pagerduty"]
+
+    # --- Reliability & Availability ---
+    - name: "Uptime"
+      description: "Availability of HybridAI-managed network functions"
+      metric: "uptime_percent"
+      requirement: ">= 99.999%"
+      threshold: "99.999%"
+      measurement_interval: "daily"
+      data_source: "System Logs / Monitoring"
+      alert:
+        severity: "critical"
+        notification_channels: ["email", "slack"]
+
+    - name: "Configuration Success Rate"
+      description: "Percentage of successful AI-driven configuration changes"
+      metric: "config_success_percent"
+      requirement: ">= 99%"
+      threshold: "99%"
+      measurement_interval: "daily"
+      data_source: "AI Config Logs"
+      alert:
+        severity: "critical"
+        notification_channels: ["email"]
+
+    # --- Resilience & Self-Healing ---
+    - name: "Anomaly Detection Accuracy"
+      description: "Percentage of anomalies correctly detected by AI"
+      metric: "anomaly_detection_accuracy_percent"
+      requirement: ">= 95%"
+      threshold: "95%"
+      measurement_interval: "daily"
+      data_source: "AI Monitoring Logs"
+      alert:
+        severity: "medium"
+        notification_channels: ["slack"]
+
+    - name: "Self-Healing Efficiency"
+      description: "Percentage of detected anomalies resolved autonomously"
+      metric: "self_heal_success_percent"
+      requirement: ">= 98%"
+      threshold: "98%"
+      measurement_interval: "daily"
+      data_source: "AI Logs"
+      alert:
+        severity: "critical"
+        notification_channels: ["email"]
+
+    # --- Energy & Resource Efficiency ---
+    - name: "Energy Efficiency"
+      description: "Energy consumed per gigabit of data transmitted"
+      metric: "energy_per_gb_joules"
+      requirement: "<= 0.5 J/GB"
+      threshold: "0.5 J/GB"
+      measurement_interval: "hourly"
+      data_source: "Telemetry / Power Sensors"
+      alert:
+        severity: "medium"
+        notification_channels: ["slack"]
+
+    - name: "AI Resource Utilization"
+      description: "Average CPU/GPU utilization of AI models"
+      metric: "ai_resource_util_percent"
+      requirement: "<= 70%"
+      threshold: "70%"
+      measurement_interval: "5m"
+      data_source: "System Metrics / AI Logs"
+      alert:
+        severity: "low"
+        notification_channels: ["slack"]
+
+    # --- Quality of Experience (QoE) ---
+    - name: "Session Setup Success Rate"
+      description: "Percentage of successful user session setups"
+      metric: "session_setup_success_percent"
+      requirement: ">= 99.5%"
+      threshold: "99.5%"
+      measurement_interval: "hourly"
+      data_source: "5G Core CDRs"
+      alert:
+        severity: "high"
+        notification_channels: ["email"]
+
+    - name: "Dropped Session Ratio"
+      description: "Percentage of dropped user sessions"
+      metric: "dropped_session_percent"
+      requirement: "<= 0.1%"
+      threshold: "0.1%"
+      measurement_interval: "hourly"
+      data_source: "5G Core Logs"
+      alert:
+        severity: "medium"
+        notification_channels: ["slack"]
+
+    - name: "Video QoE"
+      description: "Mean Opinion Score (MOS) for video quality"
+      metric: "video_mos"
+      requirement: ">= 4.0"
+      threshold: "4.0"
+      measurement_interval: "hourly"
+      data_source: "QoE Monitoring Tools"
+      alert:
+        severity: "medium"
+        notification_channels: ["slack"]
