@@ -4,7 +4,7 @@ HybridAI-NextG explores Hybrid AI for 6G networks by combining symbolic reasonin
 ## Getting Started
 
 ### Prerequisites
-- [Python 3.11 or 3.12](https://www.python.org/downloads/)
+- [Python 3.13](https://www.python.org/downloads/)
 - [Poetry](https://python-poetry.org/docs/#installation)
 
 ### Setup
@@ -13,10 +13,16 @@ Clone the repository and install dependencies:
 ```bash
 git clone https://github.com/wilhelmrauston/hybridAI-nextG.git
 cd hybridAI-nextG
+poetry config virtualenvs.in-project true
 poetry install
 ```
 
 This will create a .venv/ inside the project folder with all dependencies.
+
+**Install PyYAML** (required for SLA configuration):
+```bash
+poetry add pyyaml
+```
 
 ## Development Workflow
 
@@ -61,6 +67,18 @@ Actor: executed ... → 8.73 ms
 Assurance: latency_ms=8.73 (ok=True) stable=5/5
 Reasoning: removed intent ... (fulfilled)
 
+```
+
+# 3. Test SLA Configuration
+
+Validate and test the SLA/SLO configuration:
+
+```bash
+# Validate SLA configuration syntax and structure
+poetry run python tests/config/test_sla_config.py
+
+# Run SLA monitoring simulation
+poetry run python tests/config/mock_sla_monitor.py
 ```
 
 

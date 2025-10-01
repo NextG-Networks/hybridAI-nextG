@@ -56,8 +56,8 @@ sla:
     - name: "Uptime"
       description: "Availability of HybridAI-managed network functions"
       metric: "uptime_percent"
-      requirement: ">= 99.999%"
-      threshold: "99.999%"
+      requirement: ">= 99.9%"
+      threshold: "99.9%"
       measurement_interval: "daily"
       data_source: "System Logs / Monitoring"
       alert:
@@ -98,59 +98,15 @@ sla:
         severity: "critical"
         notification_channels: ["email"]
 
-    # --- Energy & Resource Efficiency ---
-    - name: "Energy Efficiency"
-      description: "Energy consumed per gigabit of data transmitted"
-      metric: "energy_per_gb_joules"
-      requirement: "<= 0.5 J/GB"
-      threshold: "0.5 J/GB"
-      measurement_interval: "hourly"
-      data_source: "Telemetry / Power Sensors"
-      alert:
-        severity: "medium"
-        notification_channels: ["slack"]
-
-    - name: "AI Resource Utilization"
-      description: "Average CPU/GPU utilization of AI models"
-      metric: "ai_resource_util_percent"
-      requirement: "<= 70%"
-      threshold: "70%"
-      measurement_interval: "5m"
-      data_source: "System Metrics / AI Logs"
-      alert:
-        severity: "low"
-        notification_channels: ["slack"]
-
-    # --- Quality of Experience (QoE) ---
-    - name: "Session Setup Success Rate"
-      description: "Percentage of successful user session setups"
-      metric: "session_setup_success_percent"
-      requirement: ">= 99.5%"
-      threshold: "99.5%"
-      measurement_interval: "hourly"
-      data_source: "5G Core CDRs"
+    - name: "AI Decision Latency"
+      description: "Time for AI to make network optimization decisions"
+      metric: "ai_decision_time_ms"
+      requirement: "<= 100ms"
+      threshold: "100ms"
+      measurement_interval: "1m"
+      data_source: "xApp Logs / AI Telemetry"
       alert:
         severity: "high"
-        notification_channels: ["email"]
+        notification_channels: ["slack", "email"]
 
-    - name: "Dropped Session Ratio"
-      description: "Percentage of dropped user sessions"
-      metric: "dropped_session_percent"
-      requirement: "<= 0.1%"
-      threshold: "0.1%"
-      measurement_interval: "hourly"
-      data_source: "5G Core Logs"
-      alert:
-        severity: "medium"
-        notification_channels: ["slack"]
 
-    - name: "Video QoE"
-      description: "Mean Opinion Score (MOS) for video quality"
-      metric: "video_mos"
-      requirement: ">= 4.0"
-      threshold: "4.0"
-      measurement_interval: "hourly"
-      data_source: "QoE Monitoring Tools"
-      alert:
-        severity: "medium"
-        notification_channels: ["slack"]
