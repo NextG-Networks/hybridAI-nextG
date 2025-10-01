@@ -1,7 +1,7 @@
 # (DEV)
 from pathlib import Path
 import pandas as pd, asyncio
-from src.core.bus import AsyncBus
+from core.membus import AsyncBus
 from src.core.schemas import FeatureBS
 from src.observer.feature_box import FeatureBox
 from src.core.utils import now_s
