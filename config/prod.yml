@@ -1,0 +1,16 @@
+mode: prod
+tick_ms: 100
+bs_id: bs1
+live:
+  kpi_topics: ["kpi.ue", "kpi.slice", "kpi.bs"]   # ns-3 / xApp later
+  controller_url: "http://ran-controller/"
+safety:
+  cooldown_s: 120
+  prb_delta_bounds: [-10, 10]
+  rollback: { reward_drop_pct: 10, windows: 3 }
+models:
+  scheduler_selector: /opt/models/scheduler_selector.onnx
+  prb_effect: /opt/models/prb_effect.onnx
+  manifest: /opt/models/model_manifest.json
+logging:
+  level: INFO
