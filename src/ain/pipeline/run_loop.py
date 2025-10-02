@@ -7,6 +7,9 @@ from ain.agents.proposer import run as proposer_run
 from ain.agents.actor import run as actor_run
 from ain.brain import reasoning
 from ain.pipeline.offline_demo import make_series
+from ain.intent.interface import IntentInterface
+from ain.intent.store import IntentStore
+from ain.intent.schema import Expectation
 
 ROLE_COLORS = {
     "Observer": "<blue>",
@@ -16,6 +19,7 @@ ROLE_COLORS = {
     "Reasoning": "<green>",
     "Assurance": "<white>",
 }
+
 
 def formatter(record):
     # Escape braces so Loguru doesn’t parse them
@@ -34,6 +38,7 @@ def formatter(record):
 
     return f"<dim>{t}</dim> | {open_tag}{msg}{close_tag}\n"
 
+
 async def kpi_stream(period=0.01, n=9000, seed=2):
     x, _ = make_series(n=n, seed=seed)
     for v in x.values:
@@ -41,14 +46,30 @@ async def kpi_stream(period=0.01, n=9000, seed=2):
         await asyncio.sleep(period)
 
 
+async def log_intent_errors(bus):
+    sub = await bus.sub("intent.error")
+    while True:
+        err = await sub.get()
+        logger.error(
+            f"ILM error op={err.get('op')}: {err.get('error')} | payload={err.get('payload')}"
+        )
+
+
 async def _async_main():
     logger.remove()
     logger.add(lambda m: print(m, end=""), format=formatter)
     bus = MemBus()
+    store = IntentStore()
+    ilm = IntentInterface(bus, store)
     tasks = [
+        asyncio.create_task(ilm.run()),
+        asyncio.create_task(log_intent_errors(bus)),
         asyncio.create_task(
             observer_run(
-                bus, kpi_stream(), model_path="src/ain/models/minirocket.joblib", win=128
+                bus,
+                kpi_stream(),
+                model_path="src/ain/models/minirocket.joblib",
+                win=128,
             )
         ),
         asyncio.create_task(proposer_run(bus)),

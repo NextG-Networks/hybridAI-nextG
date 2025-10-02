@@ -16,7 +16,9 @@ def to_windows(x: pd.Series, y: pd.Series, win=128, step=32):
 
 
 def main():
-    os.makedirs("models", exist_ok=True) # Currently adds in root, should be changed to add into src/ain/models
+    os.makedirs(
+        "models", exist_ok=True
+    )  # Currently adds in root, should be changed to add into src/ain/models
     x, y = make_series(n=8000, seed=1)
     X, Y = to_windows(x, y)
     mr = MiniRocket().fit(X)
