@@ -5,7 +5,7 @@ from ain.agents.observer import run as observer_run
 from ain.agents.predictor import run as predictor_run
 from ain.agents.proposer import run as proposer_run
 from ain.agents.actor import run as actor_run
-from ain.brain import reasoning
+from ain.brain.llm_reasoner import run as llm_reasoner_run
 from ain.pipeline.offline_demo import make_series
 
 ROLE_COLORS = {
@@ -16,6 +16,7 @@ ROLE_COLORS = {
     "Reasoning": "<green>",
     "Assurance": "<white>",
 }
+
 
 def formatter(record):
     # Escape braces so Loguru doesn’t parse them
@@ -34,6 +35,7 @@ def formatter(record):
 
     return f"<dim>{t}</dim> | {open_tag}{msg}{close_tag}\n"
 
+
 async def kpi_stream(period=0.01, n=9000, seed=2):
     x, _ = make_series(n=n, seed=seed)
     for v in x.values:
@@ -48,17 +50,16 @@ async def _async_main():
     tasks = [
         asyncio.create_task(
             observer_run(
-                bus, kpi_stream(), model_path="src/ain/models/minirocket.joblib", win=128
+                bus,
+                kpi_stream(),
+                model_path="src/models/minirocket.joblib",
+                win=128,
             )
         ),
         asyncio.create_task(proposer_run(bus)),
         asyncio.create_task(predictor_run(bus)),
         asyncio.create_task(actor_run(bus)),
-        asyncio.create_task(
-            reasoning.run(
-                bus, target_kpi="latency_ms", target_value=10.0, stable_windows=5
-            )
-        ),
+        asyncio.create_task(llm_reasoner_run(bus, target_kpi="latency_ms")),
     ]
     await asyncio.gather(*tasks)
 

@@ -1,78 +1,32 @@
-# hybridAI-nextG
-HybridAI-NextG explores Hybrid AI for 6G networks by combining symbolic reasoning with neural models to enhance automation in tasks like anomaly detection, forecasting, and self-healing. The project prototypes functional blocks, evaluates performance, and compares Hybrid AI with ML-only approaches.
+What more got added (Poetry doesnt wanna colaborate >:|)
+pip install httpx 
+pip install torch --index-url https://download.pytorch.org/whl/cpu   
+  
+learner/predictor.py  
+  
+Tiny GRU mode (RNN) to get a score for the given playbook.  
+Input: History and one playbook  
+Output: Score  
+Improvments: There is no training loop so right now we dont actaully learn anything.  
+This falls back on a heurstic ChatGPT made if GRU isnt installed (no clue if its good but not needed)  
+  
 
-## Getting Started
+learner/objective.py  
+  
+Turns a score into a sortable cost giving us what playbooks were best.  
+  
+  
+Proposer/proposer_learned.py  
+  
+Builds state, keeps short history, uses mutate to generate playbooks, scores and ranks with learner files and then returns commands for winner.  
+Improvments: Use the actual plays and correct output command.  
+  
+  
+brain/llm_reasoner.py
+  
+Sub to deviation, passes deviation to client helper,  receives a structured intent {category, goal, scope, contraints}, then publishes the intent.  
+  
 
-### Prerequisites
-- [Python 3.11 or 3.12](https://www.python.org/downloads/)
-- [Poetry](https://python-poetry.org/docs/#installation)
-
-### Setup
-Clone the repository and install dependencies:
-
-```bash
-git clone https://github.com/wilhelmrauston/hybridAI-nextG.git
-cd hybridAI-nextG
-poetry install
-```
-
-This will create a .venv/ inside the project folder with all dependencies.
-
-## Development Workflow
-
-# Code Formatting
-We use Black for uniform code style (like Prettier for Python).
-
-Format all code before committing:
-
-```
-poetry run black src tests
-
-```
-
-## Usage
-
-# 1. Train MiniRocket
-
-Train the MiniRocket model on the demo dataset (ItalyPowerDemand by default):
-
-```
-poetry run train_minirocket
-```
-
-This saves the model to models/minirocket.joblib.
-
-# 2. Run the Hybrid AI Demo Loop
-
-Launch the reasoning + agent loop with a synthetic KPI stream:
-
-```
-poetry run run_loop
-```
-
-You should see logs like:
-
-```
-Observer: deviation at t=1421 (v=9.86)
-Reasoning: created intent ...
-Proposer: emitted 2 candidate plans
-Predictor: ... → 9.08 ms
-Actor: executed ... → 8.73 ms
-Assurance: latency_ms=8.73 (ok=True) stable=5/5
-Reasoning: removed intent ... (fulfilled)
-
-```
-
-
-## Project Structure
-
-```
-src/ain/
-  agents/           # Observer, Predictor, Proposer, Actor
-  brain/            # Reasoning layer
-  bus/              # Async message bus (pub/sub)
-  data/             # Data
-  features/         # MiniRocket runtime
-  intent/           # Schemas for intents, plans, reports
-  pipeline/         # Entry points (train_minirocket, run_loop)
-```
+brain/openai_client.py  
+  
+This is a wrapper where we get the response from chatgpt and enfore json struct and the prompt we use.  

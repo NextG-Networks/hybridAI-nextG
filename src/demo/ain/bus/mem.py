@@ -1,19 +1,22 @@
+# src/demo/ain/bus/mem.py
 import asyncio
 from collections import defaultdict
-from typing import Callable, Dict, List, Tuple, Any
+from typing import Any, Dict, List
 
 
 class MemBus:
-    def __init__(self):
-        self._subs: List[Tuple[str, asyncio.Queue]] = []
+    def __init__(self) -> None:
+        self._topics: Dict[str, List[asyncio.Queue]] = defaultdict(list)
 
-    def subscribe(self, topic_prefix: str) -> asyncio.Queue:
+    async def pub(self, topic: str, payload: Any) -> None:
+        for q in list(self._topics.get(topic, [])):
+            await q.put(payload)
+
+    async def sub(self, topic: str) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue()
-        self._subs.append((topic_prefix, q))
+        self._topics[topic].append(q)
         return q
 
-    async def publish(self, topic: str, payload: Any):
-        # fan-out to all matching prefixes
-        for prefix, q in self._subs:
-            if topic.startswith(prefix):
-                await q.put((topic, payload))
+    def unsub(self, topic: str, q: asyncio.Queue) -> None:
+        if q in self._topics.get(topic, []):
+            self._topics[topic].remove(q)
