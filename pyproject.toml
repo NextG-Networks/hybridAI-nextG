@@ -24,6 +24,9 @@ matplotlib = "^3.10.6"
 train_minirocket = "src.demo.ain.pipeline.train_minirocket:main"
 run_loop = "src.demo.ain.pipeline.run_loop:main"
 
+run_demo = "src.demo.ain.loop.pseudo_demo:main"
+train_predictor = "src.demo.ain.loop.predictor:main"
+
 [tool.poetry.group.dev.dependencies]
 black = "^25.9.0"
 ipykernel = "^6.30.1"
