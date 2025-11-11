@@ -1,0 +1,157 @@
+
+# actor.py
+from __future__ import annotations
+import json
+from dataclasses import dataclass, asdict, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
+# ---- Domain models (use your existing ones if available) ----
+
+@dataclass
+class ControlAction:
+    type: str                 # "SCHEDULER_POLICY" | "MCS_CAP" | "PRB_WEIGHT" | "SLICE_QOS" | "REPORTING"
+    scope: str                # "CELL" | "UE" | "SLICE"
+    cell_id: Optional[str] = None
+    ue_id: Optional[str] = None
+    slice_id: Optional[str] = None
+    params: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        # Keep keys even if None for clarity/traceability; receivers may ignore None values.
+        return {
+            "type": self.type,
+            "scope": self.scope,
+            "cell_id": self.cell_id,
+            "ue_id": self.ue_id,
+            "slice_id": self.slice_id,
+            "params": self.params or {},
+        }
+
+@dataclass
+class Playbook:
+    actions: List[ControlAction]
+    playbook_id: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)  # e.g., proposer info, seed, etc.
+
+    def to_list(self) -> List[Dict[str, Any]]:
+        return [a.to_dict() for a in self.actions]
+
+
+# ---- Actor ----
+
+class Actor:
+    """Converts Playbook objects to structured JSON and saves them as config files."""
+
+    def __init__(self, out_dir: Union[str, Path] = "configs"):
+        self.out_dir = Path(out_dir)
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+
+    # ---- Public API ----
+    def make_payload(
+        self,
+        playbook: Playbook,
+        intent: Optional[Dict[str, Any]] = None,
+        extra_meta: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Return a dict payload ready to serialize to JSON."""
+        playbook_id = playbook.playbook_id or datetime.now(timezone.utc).strftime("pb_%Y%m%dT%H%M%S%fZ")
+        created_at = datetime.now(timezone.utc).isoformat()
+
+        payload: Dict[str, Any] = {
+            "playbook_id": playbook_id,
+            "created_at": created_at,
+            "intent": intent or {},
+            "metadata": {**(playbook.metadata or {}), **(extra_meta or {})},
+            "actions": playbook.to_list(),
+        }
+
+        self._validate_payload(payload)
+        return payload
+
+    def save_payload(
+        self,
+        payload: Dict[str, Any],
+        filename: Optional[str] = None,
+    ) -> Path:
+        """Write payload to disk and return the path."""
+        if not filename:
+            filename = f"{payload.get('playbook_id','playbook')}.json"
+        path = self.out_dir / filename
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        return path
+
+    def make_and_save(
+        self,
+        playbook: Playbook,
+        intent: Optional[Dict[str, Any]] = None,
+        extra_meta: Optional[Dict[str, Any]] = None,
+        filename: Optional[str] = None,
+    ) -> Path:
+        payload = self.make_payload(playbook, intent=intent, extra_meta=extra_meta)
+        return self.save_payload(payload, filename=filename)
+
+    # ---- Validation ----
+    def _validate_payload(self, payload: Dict[str, Any]) -> None:
+        if "actions" not in payload or not isinstance(payload["actions"], list) or len(payload["actions"]) == 0:
+            raise ValueError("Payload must include a non-empty 'actions' list.")
+        for i, a in enumerate(payload["actions"]):
+            if "type" not in a or "scope" not in a:
+                raise ValueError(f"Action #{i} must include 'type' and 'scope'.")
+            # Basic whitelist checks; extend as needed.
+            if a["type"] not in {"SCHEDULER_POLICY", "MCS_CAP", "PRB_WEIGHT", "SLICE_QOS", "REPORTING"}:
+                raise ValueError(f"Unsupported action type: {a['type']}")
+            if a["scope"] not in {"CELL", "UE", "SLICE"}:
+                raise ValueError(f"Unsupported action scope: {a['scope']}")
+            # Scope-target consistency (soft check)
+            if a["scope"] == "CELL" and not a.get("cell_id"):
+                raise ValueError(f"Action #{i} has scope=CELL but no 'cell_id'.")
+            if a["scope"] == "SLICE" and not a.get("slice_id"):
+                raise ValueError(f"Action #{i} has scope=SLICE but no 'slice_id'.")
+            # Params presence
+            if "params" not in a or not isinstance(a["params"], dict):
+                raise ValueError(f"Action #{i} must include 'params' dict (can be empty {{}})." )
+
+
+# ---- CLI demo ----
+if __name__ == "__main__":
+    # Example usage without importing external project modules
+    actor = Actor(out_dir="configs")
+
+    pb = Playbook(actions=[
+        ControlAction(
+            type="SCHEDULER_POLICY",
+            scope="CELL",
+            cell_id="CELL_001",
+            params={"policy": "PF"}
+        ),
+        ControlAction(
+            type="MCS_CAP",
+            scope="CELL",
+            cell_id="CELL_001",
+            params={"dl_mcs_max": 18, "ul_mcs_max": 18}
+        ),
+        ControlAction(
+            type="PRB_WEIGHT",
+            scope="SLICE",
+            slice_id="SLICE_A",
+            params={"weight": 1.1}
+        )
+    ])
+
+    intent = {
+        "type": "REDUCE_LATENCY",
+        "metric": "delay_p95_ms",
+        "target": 40.0
+    }
+
+    payload = actor.make_payload(pb, intent=intent, extra_meta={"proposer_version": "v0.1.0"})
+    out_path = actor.save_payload(payload)
+    print(f"Saved JSON config to: {out_path}")
+
+
+# If you already have your own ControlAction/Playbook classes, you can still use 
+# Actor.make_payload() — it only requires that playbook.actions contain items with 
+# a to_dict() method returning the same keys.
