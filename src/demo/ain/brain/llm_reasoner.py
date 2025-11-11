@@ -1,70 +1,86 @@
-"""
-LLM Reasoner loop:
-- Subscribes to 'deviation.detected' from the Observer
-- Calls OpenAI to produce an Intent JSON (schema-constrained)
-- Publishes 'intent.set' for the Proposer
-"""
-
-import asyncio
+from __future__ import annotations
 import uuid
-from loguru import logger
-from typing import Dict, Any
-from .openai_client import reason_from_deviation, OpenAIError
+from typing import Any, Dict
+
+from ain.brain.openai_client import reason_from_deviation, OpenAIError, fallback_intent_for_deviation
 
 
-async def run(bus, target_kpi: str = "latency_ms"):
-    sub = await bus.sub("deviation.detected")
-    backoff = 1.0  # seconds, grows on repeated failures up to max_backoff
-    max_backoff = 15.0
+def normalize_deviation(event: Dict[str, Any]) -> Dict[str, Any]:
+    dev = {
+        "source": event.get("source") or "other",
+        "metric": event.get("metric") or event.get("metric_name") or "delay_p95_ms",
+        "value": float(event.get("value", 0.0)),
+        "baseline": event.get("baseline"),
+        "target": event.get("target"),
+        "direction": event.get("direction") or ("lower_better" if "delay" in (event.get("metric","")) else "higher_better"),
+        "severity": event.get("severity") or "medium",
+        "scope": {
+            "cell_id": (event.get("scope") or {}).get("cell_id"),
+            "slice_id": (event.get("scope") or {}).get("slice_id"),
+            "region": (event.get("scope") or {}).get("region") or event.get("region"),
+            "service": (event.get("scope") or {}).get("service") or event.get("service") or "demo",
+            "tenancy": (event.get("scope") or {}).get("tenancy") or "prod",
+        },
+        "evidence_ref": event.get("evidence_ref"),
+    }
+    slo = event.get("slo")
+    if slo and dev["target"] is None and "target" in slo:
+        dev["target"] = float(slo["target"])
+    if dev["target"] is None:
+        dev["target"] = dev["value"] * (0.8 if dev["direction"] == "lower_better" else 1.2)
+    if not dev.get("evidence_ref"):
+        dev["evidence_ref"] = "telemetry://window/A"
+    return dev
 
-    while True:
-        dev = await sub.get()
+
+def to_proposer_meta(net_intent: Dict[str, Any]) -> Dict[str, Any]:
+    slo = net_intent.get("slo", {})
+    metric = "delay_p95_ms" if "latency_ms" in slo else "thr_dl_bps"
+    intent_tag = "LATENCY_P95" if metric == "delay_p95_ms" else "THR_DL"
+    scope = net_intent.get("scope", {})
+    if scope.get("cell_id"):
+        scope_str = f"CELL:{scope['cell_id']}"
+    elif scope.get("region"):
+        scope_str = f"REGION:{scope['region']}"
+    else:
+        scope_str = "GLOBAL"
+    return {"intent": intent_tag, "scope": scope_str}
+
+
+def to_rl_intent(net_intent: Dict[str, Any]) -> Dict[str, Any]:
+    slo = net_intent.get("slo", {})
+    if "latency_ms" in slo:
+        return {"type": "REDUCE_LATENCY", "metric": "delay_p95_ms", "target": float(slo["latency_ms"]), "direction": "lower_better", "action_cost": 0.01, "reward_clip": 2.0}
+    else:
+        tgt = float(slo.get("thr_dl_bps", 50e6))
+        return {"type": "INCREASE_THROUGHPUT", "metric": "thr_dl_bps", "target": tgt, "direction": "higher_better", "action_cost": 0.01, "reward_clip": 2.0}
+
+
+def create_network_intent_from_deviation(dev: Dict[str, Any], use_llm: bool = True) -> Dict[str, Any]:
+    dev_norm = normalize_deviation(dev)
+    if use_llm:
         try:
-            intent = reason_from_deviation(dev)
-            intent.setdefault("intent_id", str(uuid.uuid4()))
-            # be nice: if missing, inject a default slo target from the deviation
-            # scope
-            intent.setdefault("scope", {})
-            intent["scope"].setdefault(
-                "service", dev.get("scope", {}).get("service", "demo")
-            )
-            intent["scope"].setdefault(
-                "region", dev.get("scope", {}).get("region", "A")
-            )
+            ni = reason_from_deviation(dev_norm)
+        except OpenAIError:
+            ni = fallback_intent_for_deviation(dev_norm)
+    else:
+        ni = fallback_intent_for_deviation(dev_norm)
 
-            # constraints
-            intent.setdefault("constraints", {})
-            intent["constraints"].setdefault(
-                "tenancy", dev.get("scope", {}).get("tenancy", "prod")
-            )
-            intent["constraints"].setdefault("change_window", "22:00Z/2h")
-            intent["constraints"].setdefault("max_risk", "low")
-
-            # slo
-            intent.setdefault("slo", {})
-            intent["slo"].setdefault("latency_ms", dev.get("target", 10.0))
-            intent["slo"].setdefault("loss_pct", 0.1)
-            intent["slo"].setdefault("availability", 99.9)
-
-            # evidence
-            intent.setdefault(
-                "evidence_ref",
-                f"telemetry://window/{dev.get('scope', {}).get('region', 'A')}",
-            )
-
-            if target_kpi and target_kpi not in intent["slo"] and "target" in dev:
-                intent["slo"][target_kpi] = dev["target"]
-
-            await bus.pub("intent.set", intent)
-            logger.info(f"LLM Reasoner: emitted intent {intent['intent_id']}")
-            backoff = 1.0  # reset on success
-        except OpenAIError as e:
-            # replace angle brackets to avoid Loguru color-tag parsing
-            safe = str(e).replace("<", "(").replace(">", ")")
-            logger.error("LLM Reasoner failed: {}", safe)
-            await asyncio.sleep(backoff)
-            backoff = min(max_backoff, backoff * 1.7)
-        except Exception as e:
-            logger.exception(f"LLM Reasoner unexpected error: {e}")
-            await asyncio.sleep(backoff)
-            backoff = min(max_backoff, backoff * 1.7)
+    ni.setdefault("intent_id", str(uuid.uuid4()))
+    ni.setdefault("category", "performance")
+    ni.setdefault("goal", "restore_slo")
+    ni.setdefault("scope", {})
+    ni["scope"].setdefault("service", dev_norm["scope"]["service"])
+    ni["scope"].setdefault("region", dev_norm["scope"]["region"] or "A")
+    if dev_norm["scope"].get("cell_id"):
+        ni["scope"]["cell_id"] = dev_norm["scope"]["cell_id"]
+    if dev_norm["scope"].get("slice_id"):
+        ni["scope"]["slice_id"] = dev_norm["scope"]["slice_id"]
+    ni.setdefault("constraints", {
+        "tenancy": dev_norm["scope"].get("tenancy", "prod"),
+        "change_window": "22:00Z/2h",
+        "max_risk": "low",
+    })
+    ni.setdefault("slo", ni.get("slo", {}))
+    ni.setdefault("evidence_ref", dev_norm.get("evidence_ref", "telemetry://window/A"))
+    return ni
