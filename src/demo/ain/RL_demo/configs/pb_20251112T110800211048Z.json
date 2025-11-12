@@ -1,0 +1,46 @@
+{
+  "playbook_id": "pb_20251112T110800211048Z",
+  "created_at": "2025-11-12T11:08:00.211048+00:00",
+  "intent": {
+    "type": "REDUCE_LATENCY",
+    "metric": "delay_p95_ms",
+    "target": 40.0
+  },
+  "metadata": {
+    "q_score": 0.33299413323402405,
+    "step": 9,
+    "scope": "CELL:CELL_001"
+  },
+  "actions": [
+    {
+      "type": "REPORTING",
+      "scope": "CELL",
+      "cell_id": "CELL_001",
+      "ue_id": null,
+      "slice_id": null,
+      "params": {
+        "noop": true
+      }
+    },
+    {
+      "type": "MCS_CAP",
+      "scope": "CELL",
+      "cell_id": "CELL_001",
+      "ue_id": null,
+      "slice_id": null,
+      "params": {
+        "dl_mcs_max": 14
+      }
+    },
+    {
+      "type": "MCS_CAP",
+      "scope": "CELL",
+      "cell_id": "CELL_002",
+      "ue_id": null,
+      "slice_id": null,
+      "params": {
+        "dl_mcs_max": 14
+      }
+    }
+  ]
+}

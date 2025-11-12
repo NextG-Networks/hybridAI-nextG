@@ -223,7 +223,9 @@ def main():
             candidates = ProposerSampler.sample_playbooks(
                 action_space, N=CANDIDATE_N, K=PLAYBOOK_K,
                 cooldown_clock=cooldown_clock,
-                cache=cache, intent_meta=intent_meta, epsilon=predictor.epsilon()
+                cache=cache, 
+                intent_meta=intent_meta, 
+                epsilon=predictor.epsilon()
             )
 
             # Predictor scoring
