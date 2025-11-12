@@ -1,10 +1,3 @@
-"""
-openai_client.py — ChatGPT client contract + deterministic fallback.
-
-Implement `reason_from_deviation()` with your real OpenAI call.
-If anything goes wrong, raise `OpenAIError` so callers can switch to `fallback_intent_for_deviation()`.
-"""
-
 from __future__ import annotations
 from typing import Dict, Any
 import uuid
@@ -44,11 +37,6 @@ def _default_scope_for_dev(dev: dict) -> dict:
 
 
 def fallback_intent_for_deviation(dev: dict) -> dict:
-    """
-    Deterministic, zero-LLM intent generation (used when LLM is disabled/unavailable).
-    Produces a valid intent focusing on latency by default if direction is lower_better,
-    otherwise throughput.
-    """
     lower = dev.get("direction", "lower_better") == "lower_better"
     latency_mode = lower and ("latency" in dev.get("metric","") or "delay" in dev.get("metric",""))
 

@@ -115,43 +115,6 @@ class Actor:
                 raise ValueError(f"Action #{i} must include 'params' dict (can be empty {{}})." )
 
 
-# ---- CLI demo ----
-if __name__ == "__main__":
-    # Example usage without importing external project modules
-    actor = Actor(out_dir="configs")
-
-    pb = Playbook(actions=[
-        ControlAction(
-            type="SCHEDULER_POLICY",
-            scope="CELL",
-            cell_id="CELL_001",
-            params={"policy": "PF"}
-        ),
-        ControlAction(
-            type="MCS_CAP",
-            scope="CELL",
-            cell_id="CELL_001",
-            params={"dl_mcs_max": 18, "ul_mcs_max": 18}
-        ),
-        ControlAction(
-            type="PRB_WEIGHT",
-            scope="SLICE",
-            slice_id="SLICE_A",
-            params={"weight": 1.1}
-        )
-    ])
-
-    intent = {
-        "type": "REDUCE_LATENCY",
-        "metric": "delay_p95_ms",
-        "target": 40.0
-    }
-
-    payload = actor.make_payload(pb, intent=intent, extra_meta={"proposer_version": "v0.1.0"})
-    out_path = actor.save_payload(payload)
-    print(f"Saved JSON config to: {out_path}")
-
-
 # If you already have your own ControlAction/Playbook classes, you can still use 
 # Actor.make_payload() — it only requires that playbook.actions contain items with 
 # a to_dict() method returning the same keys.
