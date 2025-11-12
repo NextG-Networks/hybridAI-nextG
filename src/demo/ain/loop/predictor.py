@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from ain.loop.proposer import (
     Playbook, ControlAction, ActionSpace,
-    PLAYBOOK_K, CANDIDATE_N,
+    PLAYBOOK_K
 )
 
 from ain.loop.model_defs import SlateDQNetwork

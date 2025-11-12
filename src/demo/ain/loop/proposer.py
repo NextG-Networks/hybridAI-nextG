@@ -2,6 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional, Any
 import random
+from ain.common.types import ControlAction, Playbook
+
 
 # -----------------------------
 # Global configuration (PoC defaults)
@@ -11,39 +13,11 @@ PLAYBOOK_K = 3         # actions per playbook
 CANDIDATE_N = 5        # number of candidate playbooks per decision
 COOLDOWN_STEPS = 3     # cooldown per (type, scope, entity)
 
-# -----------------------------
-# Action definitions
-# -----------------------------
 
 ActionType = str   # {"SCHEDULER_POLICY","MCS_CAP","PRB_WEIGHT","SLICE_QOS","REPORTING"}
 ScopeType = str    # {"CELL","UE","SLICE"}
 
-@dataclass(frozen=True)
-class ControlAction:
-    type: ActionType
-    scope: ScopeType
-    cell_id: Optional[str] = None
-    ue_id: Optional[str] = None
-    slice_id: Optional[str] = None
-    params: Dict[str, Any] = field(default_factory=dict)
-
-    def to_json(self) -> Dict[str, Any]:
-        out = {"type": self.type, "scope": self.scope, "params": self.params}
-        if self.cell_id is not None:
-            out["cell_id"] = self.cell_id
-        if self.ue_id is not None:
-            out["ue_id"] = self.ue_id
-        if self.slice_id is not None:
-            out["slice_id"] = self.slice_id
-        return out
-
-@dataclass
-class Playbook:
-    actions: List[ControlAction]
-    def to_json(self) -> List[Dict[str, Any]]:
-        return [a.to_json() for a in self.actions]
-
-# Small demo grids (extend as needed)
+# Small demo grids this would later be sent by the actual network as a "what can we change now" message
 SCHEDULER_POLICIES = ["PF", "RR", "MAX_THROUGHPUT"]
 MCS_DL_MAX_GRID = [14, 18, 22]
 PRB_WEIGHT_GRID = [0.8, 1.0, 1.2]
@@ -68,6 +42,26 @@ class ActionSpace:
         # Include a NOOP-like action
         acts.append(ControlAction("REPORTING", "CELL", params={"noop": True}))
         return acts
+
+#@dataclass # It will look something like this when we use the actaul network info
+#class ActionSpace:
+#    scheduler_policies: List[str]
+#    mcs_dl_max_grid: List[int]
+#    prb_weight_grid: List[float]
+#    slice_weight_grid: List[float]
+#    cells: List[str]
+#    slices: List[str]
+#
+#    @classmethod
+#    def from_config(cls, cfg: Dict[str, Any]) -> "ActionSpace":
+#        return cls(
+#            scheduler_policies=cfg.get("scheduler_policies", ["PF", "RR"]),
+#            mcs_dl_max_grid=cfg.get("mcs_dl_max_grid", [14, 18, 22]),
+#            prb_weight_grid=cfg.get("prb_weight_grid", [0.8, 1.0, 1.2]),
+#            slice_weight_grid=cfg.get("slice_weight_grid", [0.8, 1.0, 1.2]),
+#            cells=cfg.get("cells", ["CELL_001"]),
+#            slices=cfg.get("slices", ["SLICE_A", "SLICE_B"])
+#        )
 
 # Conflict and cooldown helpers
 def conflict(a: ControlAction, b: ControlAction) -> bool:

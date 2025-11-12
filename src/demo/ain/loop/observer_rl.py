@@ -10,19 +10,6 @@ from typing import Deque, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-# Optional: if your project path exposes these, you can import them.
-# Fallback to local definition if not available at import time.
-try:
-    from ain.loop.predictor import StateEncoder  # type: ignore
-except Exception:
-    import torch.nn as nn
-    class StateEncoder(nn.Module):
-        def __init__(self, feat_dim: int, hidden: int = 64):
-            super().__init__()
-            self.gru = nn.GRU(input_size=feat_dim, hidden_size=hidden, num_layers=1, batch_first=True)
-        def forward(self, x):
-            _, h = self.gru(x)
-            return h.squeeze(0)
 
 @dataclass
 class Intent:
@@ -34,17 +21,6 @@ class Intent:
     reward_clip: float = 2.0         # clip absolute reward
 
 class RLObserver:
-    """
-    RL-focused Observer.
-
-    Responsibilities:
-    - Reads KPI JSON snapshots from a rolling file (like fake_kpi_stream.json).
-    - Maintains a sliding window of the last W feature vectors.
-    - Exposes state windows as np.ndarray [W, F] for the Predictor.
-    - Optionally encodes the window with an internal GRU StateEncoder to produce embeddings.
-    - Computes rewards based on active Intent and KPI deltas.
-    - Pushes (s, p, r, s2, done) to predictor.replay and calls predictor.learn_step().
-    """
     def __init__(
         self,
         predictor,
@@ -53,7 +29,6 @@ class RLObserver:
         window: int = 12,
         features: Optional[List[str]] = None,
         use_internal_encoder: bool = False,
-        state_hidden: int = 64,
         device: Optional[torch.device] = None,
     ):
         self.predictor = predictor
@@ -90,14 +65,6 @@ class RLObserver:
             "active_ue_count": 100.0,
             "delay_p95_ms": 100.0,
         }
-
-        # Internal encoder (optional). NOTE: Predictor already includes a StateEncoder;
-        # use this only if you want an embedding in the Observer for other purposes.
-        self.state_enc = None
-        if self.use_internal_encoder:
-            feat_dim = len(self.features)
-            self.state_enc = StateEncoder(feat_dim=feat_dim, hidden=state_hidden).to(self.device)
-            self.state_enc.eval()
 
     # ---------- KPI reading & preprocessing ----------
     def _read_latest_kpi(self) -> Optional[Dict]:
@@ -167,12 +134,6 @@ class RLObserver:
 
     # ---------- Public API ----------
     def step(self, last_playbook) -> Optional[np.ndarray]:
-        """
-        Read the latest KPI, update the sliding window, compute reward (if possible),
-        and train the predictor using the new transition.
-
-        Returns: current state window [W, F] or None if no KPI yet.
-        """
         kpi = self._read_latest_kpi()
         if kpi is None:
             return None
@@ -196,38 +157,5 @@ class RLObserver:
 
         return s2  # current window
 
-    # Optional: produce an embedding with internal StateEncoder (if enabled)
-    def encode_state_embedding(self) -> Optional[np.ndarray]:
-        if not self.use_internal_encoder or self.state_enc is None or self.last_state_win is None:
-            return None
-        x = torch.tensor(self.last_state_win[None, ...], dtype=torch.float32, device=self.device)  # [1, W, F]
-        with torch.no_grad():
-            z = self.state_enc(x)  # [1, H]
-        return z.detach().cpu().numpy().squeeze(0)
-
-# Demo (optional) — run this file directly to smoke-test windowing and rewards.
 if __name__ == "__main__":
-    from dataclasses import dataclass
-
-    class DummyPredictor:
-        def __init__(self):
-            class DummyReplay:
-                def __init__(self): self.data = []
-                def push(self, s, p, r, s2, d): self.data.append((s, p, r, s2, d))
-            self.replay = DummyReplay()
-            self.steps = 0
-        def encode_playbook_onehot(self, pb):
-            return np.zeros((3, 48), dtype=np.float32)
-        def learn_step(self, feat_dim):
-            self.steps += 1
-
-    @dataclass
-    class Playbook:
-        actions: List[dict]
-
-    intent = Intent(type="REDUCE_LATENCY", metric="delay_p95_ms", target=40.0, direction="lower_better")
-    obs = RLObserver(DummyPredictor(), intent=intent, kpi_file="fake_kpi_stream.json", window=12)
-    # Simulate a few steps with a dummy playbook
-    for _ in range(5):
-        obs.step(Playbook(actions=[{"type": "MCS_CAP"}]))
-    print(f"Collected transitions: {len(obs.predictor.replay.data)}")
+    pass

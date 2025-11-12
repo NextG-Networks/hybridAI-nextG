@@ -133,9 +133,9 @@ def to_actor_playbook(pb, scope_hint: str | None = None) -> APlaybook:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--steps", type=int, default=60, help="Max steps for one intent lifecycle")
+    ap.add_argument("--steps", type=int, default=30, help="Max steps for one intent lifecycle")
     ap.add_argument("--target", type=float, default=40.0, help="Default latency SLO target (ms) for delay_p95_ms")
-    ap.add_argument("--success-streak", type=int, default=5, help="Consecutive hits to consider intent achieved")
+    ap.add_argument("--success-streak", type=int, default=4, help="Consecutive hits to consider intent achieved")
     ap.add_argument("--save-every", type=int, default=10, help="Save actor JSON every N steps")
     ap.add_argument("--no-spawn-kpi", action="store_true", help="Do not spawn the fake KPI generator")
     ap.add_argument("--out-dir", type=str, default="configs", help="Where to save playbook JSONs")

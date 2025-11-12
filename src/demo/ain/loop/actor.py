@@ -1,43 +1,10 @@
-
-# actor.py
 from __future__ import annotations
 import json
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
-
-# ---- Domain models (use your existing ones if available) ----
-
-@dataclass
-class ControlAction:
-    type: str                 # "SCHEDULER_POLICY" | "MCS_CAP" | "PRB_WEIGHT" | "SLICE_QOS" | "REPORTING"
-    scope: str                # "CELL" | "UE" | "SLICE"
-    cell_id: Optional[str] = None
-    ue_id: Optional[str] = None
-    slice_id: Optional[str] = None
-    params: Dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> Dict[str, Any]:
-        # Keep keys even if None for clarity/traceability; receivers may ignore None values.
-        return {
-            "type": self.type,
-            "scope": self.scope,
-            "cell_id": self.cell_id,
-            "ue_id": self.ue_id,
-            "slice_id": self.slice_id,
-            "params": self.params or {},
-        }
-
-@dataclass
-class Playbook:
-    actions: List[ControlAction]
-    playbook_id: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)  # e.g., proposer info, seed, etc.
-
-    def to_list(self) -> List[Dict[str, Any]]:
-        return [a.to_dict() for a in self.actions]
-
+from ain.common.types import ControlAction, Playbook
 
 # ---- Actor ----
 
@@ -117,4 +84,4 @@ class Actor:
 
 # If you already have your own ControlAction/Playbook classes, you can still use 
 # Actor.make_payload() — it only requires that playbook.actions contain items with 
-# a to_dict() method returning the same keys.
+# a to_dict() method returning the same keys. (Good GPT prompt i think)
