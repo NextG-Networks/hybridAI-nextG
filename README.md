@@ -1,4 +1,4 @@
-Demo v1.2
+Demo v1.2  
 Demo walkthrough:  
   
 1. Run fake_kpi to create a fake kpi stream.  
@@ -22,3 +22,7 @@ Checklist: Fix proposer
            Fix membus instead of calls from demo file  
   
 Demo v2.0  
+Fixing predictor learning:  
+We now how a online and offline training for the predictor, offline training is now us just randomly generating (state, action, reward, next_state) into a replay buffer that we then use to train a Q-network. So we get vectorization of state and actions and using the fake generated replay buffer it learns how to predict Q values. For the online training it works in the same way where we save the new scenarios and keep fine tuning the Q network to make better predictios based on what happend.   
+  
+This leads to playbooks being the same all the time which makes sense since our proposer is not yet fixed, and since we have "learned" Q value prediction it makes the same prediction every time since it also doesnt have any online learning now since its just a faked scenario.  
