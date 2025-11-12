@@ -16,13 +16,13 @@ Demo walkthrough:
 7. Back to loop_observer reads KPI to state tensor and recalculate rewards.  
 
 Notes: No learning, No membus communication (right now just calls from demo_cli), proposer needs to be fixed so it not just random.  
-Checklist: Fix proposer  
+Checklist:   
            Fix predictor learning  
            Fix real reasoner intents (might be out of scope for this demo, we will see if i have time)  
            Fix membus instead of calls from demo file  
   
 Demo v2.0  
-Fixing predictor learning:  
+Fixed predictor learning:  
 We now how a online and offline training for the predictor, offline training is now us just randomly generating (state, action, reward, next_state) into a replay buffer that we then use to train a Q-network. So we get vectorization of state and actions and using the fake generated replay buffer it learns how to predict Q values. For the online training it works in the same way where we save the new scenarios and keep fine tuning the Q network to make better predictios based on what happend.   
   
-This leads to playbooks being the same all the time which makes sense since our proposer is not yet fixed, and since we have "learned" Q value prediction it makes the same prediction every time since it also doesnt have any online learning now since its just a faked scenario.  
+This leads to playbooks being the same all the time which makes sense since we use the same seed for initial weigths we get the same predicted Q value each time, our proposer also isnt random enough to actaully force a drastic change but it should be fine to have it like this for a real network rather than a fakes scenario. Running with the pretrained weights also changes the outcome which is a good sign of learning (even though its faked now) actaully working. 

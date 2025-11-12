@@ -28,11 +28,6 @@ EPS_END = 0.05
 EPS_DECAY_STEPS = 20000
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu") # Use GPU if available
-
-# -----------------------------
-# Networks
-# -----------------------------
-
 # -----------------------------
 # Replay Buffer
 # -----------------------------
