@@ -142,6 +142,7 @@ def main():
     ap.add_argument("--reasoner", choices=["llm","fallback"], default="llm", help="Use LLM or deterministic fallback")
     ap.add_argument("--ext-metric", type=str, default=None, help="External SLO metric (e.g., thr_dl_bps)")
     ap.add_argument("--ext-target", type=float, default=None, help="External SLO target value")
+    ap.add_argument("--offline-model", type=str, default=None, help="Path to trained Q model (e.g., models/qnet_offline.pt)")
     args = ap.parse_args()
 
     # Optional KPI generator
@@ -158,6 +159,12 @@ def main():
 
         tmp_intent = Intent(type="REDUCE_LATENCY", metric="delay_p95_ms", target=args.target)
         predictor = SlateDQNPredictor(action_space, feat_dim=len(RLObserver(None, tmp_intent).features), seed=0)
+        if args.offline_model:
+            try:
+                predictor.load_offline(args.offline_model)
+                print(f"[Predictor] Loaded offline weights from {args.offline_model}")
+            except Exception as e:
+                print(f"[Predictor] Could not load offline weights ({e}). Using fresh model.")
         observer = RLObserver(predictor, intent=tmp_intent, kpi_file="fake_kpi_stream.json", window=12)
         actor = Actor(out_dir=args.out_dir)
 

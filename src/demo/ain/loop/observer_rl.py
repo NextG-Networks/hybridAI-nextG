@@ -188,7 +188,8 @@ class RLObserver:
 
             # Push transition to replay and learn
             self.predictor.replay.push(s, p, r, s2, False)
-            self.predictor.learn_step(feat_dim=s.shape[1])
+            self.predictor.learn_step()
+
 
         # Update previous pointers
         self.last_kpi_raw = kpi

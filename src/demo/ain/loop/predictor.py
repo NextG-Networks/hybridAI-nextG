@@ -12,6 +12,8 @@ from ain.loop.proposer import (
     PLAYBOOK_K, CANDIDATE_N,
 )
 
+from ain.loop.model_defs import SlateDQNetwork
+
 # -----------------------------
 # Config (can be tweaked)
 # -----------------------------
@@ -30,76 +32,6 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu") # Use GPU 
 # -----------------------------
 # Networks
 # -----------------------------
-
-class StateEncoder(nn.Module): # Takes a tensor representing the state and turns it into a vector using nn.GRU(this tensor needs to be created in the obersver)
-    def __init__(self, feat_dim: int, hidden: int = 64):
-        super().__init__()
-        self.gru = nn.GRU(
-            input_size=feat_dim, 
-            hidden_size=hidden, 
-            num_layers=1, 
-            batch_first=True
-        )
-
-    def forward(self, x):
-        _, h = self.gru(x)
-        return h.squeeze(0)
-
-class ActionEncoder(nn.Module): # Takes our actions (JSON style) and turns them into dense vectors using nn.MLP
-    def __init__(self, embed_dim: int = 64, cell_cap: int = 16, slice_cap: int = 16):
-        super().__init__()
-        self.type_dim = 5
-        self.scope_dim = 3
-        self.cell_cap = cell_cap
-        self.slice_cap = slice_cap
-        self.param_dim = 8
-        self.input_dim = self.type_dim + self.scope_dim + self.cell_cap + self.slice_cap + self.param_dim
-        self.mlp = nn.Sequential(
-            nn.Linear(self.input_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, embed_dim),
-            nn.ReLU(),
-        )
-
-    def forward(self, action_batch_tensor: torch.Tensor) -> torch.Tensor:
-        B, K, D = action_batch_tensor.shape
-        x = action_batch_tensor.view(B*K, D)
-        z = self.mlp(x)
-        return z.view(B, K, -1)
-
-class PlaybookEncoder(nn.Module): # Takes encoded actions (multiple dense vectors) and turns them into a single dense vector using nn.GRU
-    def __init__(self, action_embed_dim: int = 64, hidden: int = 64):
-        super().__init__()
-        self.gru = nn.GRU(
-            input_size=action_embed_dim, 
-            hidden_size=hidden, 
-            num_layers=1, 
-            batch_first=True
-        )
-
-    def forward(self, action_embeds):
-        _, h = self.gru(action_embeds)
-        return h.squeeze(0)
-
-class SlateDQNetwork(nn.Module): # Takes state vector and playbook vector, fuses them, and outputs Q-value
-    def __init__(self, feat_dim: int, state_hidden=64, action_embed=64, play_hidden=64, fusion_hidden=128):
-        super().__init__()
-        self.state_enc = StateEncoder(feat_dim, hidden=state_hidden)
-        self.action_enc = ActionEncoder(embed_dim=action_embed)
-        self.play_enc = PlaybookEncoder(action_embed_dim=action_embed, hidden=play_hidden)
-        self.fusion = nn.Sequential(
-            nn.Linear(state_hidden + play_hidden, fusion_hidden),
-            nn.ReLU(),
-            nn.Linear(fusion_hidden, 1),
-        )
-        self.input_dim_action_onehot = self.action_enc.input_dim
-
-    def forward(self, state_seq: torch.Tensor, playbook_onehots: torch.Tensor) -> torch.Tensor:
-        hs = self.state_enc(state_seq)                 # [B,Hs]
-        act_embeds = self.action_enc(playbook_onehots) # [B,K,E]
-        hp = self.play_enc(act_embeds)                 # [B,Hp]
-        q = self.fusion(torch.cat([hs, hp], dim=-1)).squeeze(-1)
-        return q
 
 # -----------------------------
 # Replay Buffer
@@ -139,15 +71,24 @@ class SlateDQNPredictor:
     def __init__(self, action_space: ActionSpace, feat_dim: int, seed=0):
         np.random.seed(seed); torch.manual_seed(seed)
         self.action_space = action_space
-        self.model = SlateDQNetwork(feat_dim=feat_dim).to(DEVICE)
-        self.target = SlateDQNetwork(feat_dim=feat_dim).to(DEVICE)
-        self.target.load_state_dict(self.model.state_dict())
-        self.optim = torch.optim.Adam(self.model.parameters(), lr=LR)
-        self.replay = ReplayBuffer()
-        self.steps = 0
-        self.action_onehot_dim = self.model.input_dim_action_onehot
         self.cell_index = {c:i for i,c in enumerate(action_space.cells)}
         self.slice_index = {s:i for i,s in enumerate(action_space.slices)}
+
+        cell_cap = len(self.cell_index)
+        slice_cap = len(self.slice_index)
+
+        self.model = SlateDQNetwork(feat_dim=feat_dim,
+                                    cell_cap=cell_cap,
+                                    slice_cap=slice_cap).to(DEVICE)
+        self.target = SlateDQNetwork(feat_dim=feat_dim,
+                                     cell_cap=cell_cap,
+                                     slice_cap=slice_cap).to(DEVICE)
+        self.target.load_state_dict(self.model.state_dict())
+        self.optim = torch.optim.Adam(self.model.parameters(), lr=LR)
+        self.replay = ReplayBuffer(capacity=REPLAY_CAP)
+        self.steps = 0
+        self.action_onehot_dim = self.model.input_dim_action_onehot
+
 
     # Encodes our actions intpo one-hot vectors and stacks them
     def _one_hot(self, idx: int, dim: int):
@@ -155,14 +96,18 @@ class SlateDQNPredictor:
         if 0 <= idx < dim: v[idx] = 1.0
         return v
 
-    def _encode_action_np(self, a: ControlAction) -> np.ndarray: # Encodes a single action into a one-hot vector (not smart encoding)
+    def _encode_action_np(self, a: ControlAction) -> np.ndarray:
         type_map = {"SCHEDULER_POLICY":0, "MCS_CAP":1, "PRB_WEIGHT":2, "SLICE_QOS":3, "REPORTING":4}
         scope_map = {"CELL":0, "UE":1, "SLICE":2}
         vecs = []
         vecs.append(self._one_hot(type_map.get(a.type, 4), 5))
         vecs.append(self._one_hot(scope_map.get(a.scope, 0), 3))
-        vecs.append(self._one_hot(self.cell_index.get(a.cell_id, -1), 16))
-        vecs.append(self._one_hot(self.slice_index.get(a.slice_id, -1), 16))
+
+        n_cells = len(self.cell_index)
+        n_slices = len(self.slice_index)
+        vecs.append(self._one_hot(self.cell_index.get(a.cell_id, -1), n_cells if n_cells > 0 else 1))
+        vecs.append(self._one_hot(self.slice_index.get(a.slice_id, -1), n_slices if n_slices > 0 else 1))
+
         p = np.zeros(8, dtype=np.float32)
         if a.type == "SCHEDULER_POLICY":
             pol = a.params.get("policy","PF")
@@ -178,6 +123,7 @@ class SlateDQNPredictor:
             p[-1] = 1.0
         vecs.append(p)
         return np.concatenate(vecs, axis=0)
+
 
     def encode_playbook_onehot(self, pb: Playbook) -> np.ndarray: # Encodes actions into a one-hot vector (not smart encoding)
         K = PLAYBOOK_K; D = self.action_onehot_dim
@@ -204,7 +150,7 @@ class SlateDQNPredictor:
     
     # --- training ---
 
-    def learn_step(self, feat_dim: int):
+    def learn_step(self):
         if len(self.replay) < BATCH_SIZE:
             return None
         s, p, r, s2, d = self.replay.sample(BATCH_SIZE)
@@ -217,13 +163,10 @@ class SlateDQNPredictor:
         q = self.model(s, p)
 
         with torch.no_grad():
-            Bsz = s2.shape[0]
-            next_pb = []
-            for _ in range(Bsz):
-                next_pb.append(p[0].cpu().numpy())  # [K,D]
-            next_pb = torch.tensor(np.stack(next_pb, axis=0), dtype=torch.float32, device=DEVICE)  # [B,K,D]
-            q2 = self.target(s2, next_pb)     # [B]
+            # crude SARSA(0): use same playbook encoding as "next action"
+            q2 = self.target(s2, p)
             y = r + GAMMA * (1.0 - d) * q2
+
 
         loss = F.mse_loss(q, y)
         self.optim.zero_grad()
@@ -237,11 +180,31 @@ class SlateDQNPredictor:
                 tp.data.mul_(1 - TAU).add_(p_.data * TAU)
 
         return float(loss.item())
+    
+    def observe(self, s: np.ndarray, playbook: Playbook, r: float, s2: np.ndarray, done: bool):
+        p = self.encode_playbook_onehot(playbook)   # [K,D]
+        self.replay.push(s.astype(np.float32), p.astype(np.float32),
+                         float(r), s2.astype(np.float32), bool(done))
+        
+    def load_offline(self, path="models/qnet_offline.pt"):
+        ckpt = torch.load(path, map_location="cpu")
+        meta = ckpt.get("meta", {})
+        cell_cap = meta.get("cell_cap", len(self.cell_index))
+        slice_cap = meta.get("slice_cap", len(self.slice_index))
+        new = SlateDQNetwork(feat_dim=self.model.state_enc.gru.input_size, cell_cap=cell_cap, slice_cap=slice_cap).to(DEVICE)
+        new.load_state_dict(ckpt["state_dict"])
+        self.model = new
+        self.target = SlateDQNetwork(feat_dim=self.model.state_enc.gru.input_size, cell_cap=cell_cap, slice_cap=slice_cap).to(DEVICE)
+        self.target.load_state_dict(self.model.state_dict())
+        self.action_onehot_dim = self.model.input_dim_action_onehot
+        self.model.eval()
 
 
-def main():
-    from .pseudo_demo import run_poc
-    run_poc(steps=1000)
+
+
+
+
+def main():    pass
 
 if __name__ == "__main__":
     main()

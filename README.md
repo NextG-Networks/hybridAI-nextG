@@ -1,3 +1,4 @@
+Demo v1.2
 Demo walkthrough:  
   
 1. Run fake_kpi to create a fake kpi stream.  
@@ -16,5 +17,8 @@ Demo walkthrough:
 
 Notes: No learning, No membus communication (right now just calls from demo_cli), proposer needs to be fixed so it not just random.  
 Checklist: Fix proposer  
-           Fix predictor learning 
-           Fix real reasoner intents (might be out of scope for this demo, we will see if i have time)
+           Fix predictor learning  
+           Fix real reasoner intents (might be out of scope for this demo, we will see if i have time)  
+           Fix membus instead of calls from demo file  
+  
+Demo v2.0  

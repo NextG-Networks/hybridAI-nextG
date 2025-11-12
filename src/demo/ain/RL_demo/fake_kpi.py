@@ -1,5 +1,6 @@
 # fake_kpi_stream.py
 import json
+import os
 import random
 import time
 from datetime import datetime, timezone
@@ -7,6 +8,16 @@ from pathlib import Path
 
 MAX_KPIS = 20
 OUTPUT_FILE = Path("fake_kpi_stream.json")
+
+def write_json_atomic(path: Path, obj: dict) -> None:
+    """Write JSON atomically to avoid readers seeing partial files."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)  # atomic on Windows & Unix
 
 def random_cell_metrics():
     return {
@@ -35,7 +46,7 @@ def random_cell_metrics():
 
 def random_ue_metrics():
     metrics = []
-    for i in range(random.randint(1, 5)):  # up to 5 UEs per snapshot
+    for i in range(random.randint(1, 5)):
         metrics.append({
             "ue_id": f"UE_{i+1:03d}",
             "cell_id": "CELL_001",
@@ -76,9 +87,15 @@ def generate_kpi_snapshot(seq):
     }
 
 def main():
+    # Be tolerant if an old file is empty/partial
     if OUTPUT_FILE.exists():
-        with open(OUTPUT_FILE, "r") as f:
-            data = json.load(f)
+        try:
+            with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if not isinstance(data, dict) or "kpi_stream" not in data:
+                    data = {"kpi_stream": []}
+        except Exception:
+            data = {"kpi_stream": []}
     else:
         data = {"kpi_stream": []}
 
@@ -92,8 +109,8 @@ def main():
         if len(data["kpi_stream"]) > MAX_KPIS:
             data["kpi_stream"].pop(0)
 
-        with open(OUTPUT_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+        # **Atomic write instead of in-place overwrite**
+        write_json_atomic(OUTPUT_FILE, data)
 
         print(f"[+] Added KPI snapshot #{seq} (total={len(data['kpi_stream'])})")
         seq += 1
