@@ -227,6 +227,7 @@ def main():
                 print(f"[Reasoner] Intent set from deviation: {observer.intent}  (scope={intent_meta['scope']})")
 
             # Proposer candidates
+            print(f"[Proposer] Generating {CANDIDATE_N} candidate playbooks (ε={predictor.epsilon():.3f})...")
             candidates = ProposerSampler.sample_playbooks(
                 action_space, N=CANDIDATE_N, K=PLAYBOOK_K,
                 cooldown_clock=cooldown_clock,
@@ -234,11 +235,15 @@ def main():
                 intent_meta=intent_meta, 
                 epsilon=predictor.epsilon()
             )
+            print(f"[Proposer] → {len(candidates)} playbooks generated.")
+
 
             # Predictor scoring
+            print(f"[Predictor] Evaluating Q-values for {len(candidates)} candidates...")
             scored = predictor.score_playbooks(state, candidates)
             scored.sort(key=lambda x: x[1], reverse=True)
             best_pb, best_q = scored[0]
+            print(f"[Predictor] → Best Q={best_q:.3f}")
 
             # Cooldown bookkeeping
             for a in best_pb.actions:
@@ -258,6 +263,7 @@ def main():
                 print(f"   • A{i+1}: {a.type} {a.scope} cell={a.cell_id} slice={a.slice_id} params={a.params}")
 
             # Save JSON per cadence or on success
+            print(f"[Actor] Saving selected playbook (step={step}) with Q={best_q:.3f}")
             if (step % max(1, args.save_every) == 0) or (success_streak >= args.success_streak):
                 actor_pb = to_actor_playbook(best_pb)
                 payload = actor.make_payload(
@@ -266,7 +272,7 @@ def main():
                     extra_meta={"q_score": best_q, "step": step, "scope": intent_meta.get("scope","GLOBAL")}
                 )
                 out_path = actor.save_payload(payload)
-                print(f"   -> Saved JSON to: {out_path}")
+            print(f"[Actor] → Playbook saved to {out_path}")
 
             last_playbook = best_pb
             predictor.steps += 1

@@ -158,7 +158,6 @@ class SlateDQNPredictor:
         q = self.model(s, p)
 
         with torch.no_grad():
-            # crude SARSA(0): use same playbook encoding as "next action"
             q2 = self.target(s2, p)
             y = r + GAMMA * (1.0 - d) * q2
 
