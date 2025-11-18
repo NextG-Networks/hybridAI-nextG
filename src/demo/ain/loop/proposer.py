@@ -2,8 +2,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional, Any
 import random
+import numpy as np
 from ain.common.types import ControlAction, Playbook
 
+# Import contextual bandit components
+try:
+    from ain.bandit.context_extractor import NetworkContext
+    BANDIT_AVAILABLE = True
+except ImportError:
+    # Fallback if bandit components not yet created
+    BANDIT_AVAILABLE = False
+    print("[Warning] Contextual bandit components not found in proposer. Using basic mode.")
 
 # -----------------------------
 # Global configuration (PoC defaults)
@@ -12,7 +21,6 @@ from ain.common.types import ControlAction, Playbook
 PLAYBOOK_K = 3         # actions per playbook
 CANDIDATE_N = 5        # number of candidate playbooks per decision
 COOLDOWN_STEPS = 3     # cooldown per (type, scope, entity)
-
 
 ActionType = str   # {"SCHEDULER_POLICY","MCS_CAP","PRB_WEIGHT","SLICE_QOS","REPORTING"}
 ScopeType = str    # {"CELL","UE","SLICE"}
@@ -27,6 +35,7 @@ SLICE_WEIGHT_GRID = [0.8, 1.0, 1.2]
 class ActionSpace:
     cells: List[str]
     slices: List[str]
+    
     def all_atomic_actions(self) -> List[ControlAction]:
         acts: List[ControlAction] = []
         for c in self.cells:
@@ -42,26 +51,6 @@ class ActionSpace:
         # Include a NOOP-like action
         acts.append(ControlAction("REPORTING", "CELL", params={"noop": True}))
         return acts
-
-#@dataclass # It will look something like this when we use the actaul network info
-#class ActionSpace:
-#    scheduler_policies: List[str]
-#    mcs_dl_max_grid: List[int]
-#    prb_weight_grid: List[float]
-#    slice_weight_grid: List[float]
-#    cells: List[str]
-#    slices: List[str]
-#
-#    @classmethod
-#    def from_config(cls, cfg: Dict[str, Any]) -> "ActionSpace":
-#        return cls(
-#            scheduler_policies=cfg.get("scheduler_policies", ["PF", "RR"]),
-#            mcs_dl_max_grid=cfg.get("mcs_dl_max_grid", [14, 18, 22]),
-#            prb_weight_grid=cfg.get("prb_weight_grid", [0.8, 1.0, 1.2]),
-#            slice_weight_grid=cfg.get("slice_weight_grid", [0.8, 1.0, 1.2]),
-#            cells=cfg.get("cells", ["CELL_001"]),
-#            slices=cfg.get("slices", ["SLICE_A", "SLICE_B"])
-#        )
 
 # Conflict and cooldown helpers
 def conflict(a: ControlAction, b: ControlAction) -> bool:
@@ -89,23 +78,42 @@ def violates_cooldown(a: ControlAction, cooldown_clock: Dict[Tuple[str,str,str],
     return cooldown_clock.get(cooldown_key(a), 0) > 0
 
 # -----------------------------
-# Cache of good playbooks
+# Enhanced Cache of good playbooks with contextual awareness
 # -----------------------------
 
 class CacheLibrary:
     def __init__(self, max_per_key=20):
         self.max_per_key = max_per_key
         self.store: Dict[str, List[Tuple[Playbook, float]]] = {}
+        # NEW: Context-aware cache
+        self.context_store: Dict[str, List[Tuple[Playbook, float, str]]] = {}  # (playbook, score, situation)
 
     def key(self, intent_meta: Dict[str,Any]) -> str:
         scope = intent_meta.get("scope","GLOBAL")
         intent = intent_meta.get("intent","LATENCY_P95")
         return f"{intent}:{scope}"
 
+    def context_key(self, intent_meta: Dict[str,Any], situation: str) -> str:
+        """Enhanced cache key including network situation."""
+        base_key = self.key(intent_meta)
+        return f"{base_key}:{situation}"
+
     def add(self, intent_meta: Dict[str,Any], playbook: Playbook, score: float):
         k = self.key(intent_meta)
         arr = self.store.setdefault(k, [])
         arr.append((playbook, score))
+        arr.sort(key=lambda x: x[1], reverse=True)
+        if len(arr) > self.max_per_key:
+            arr[:] = arr[:self.max_per_key]
+
+    def add_contextual(self, intent_meta: Dict[str,Any], playbook: Playbook, score: float, situation: str):
+        """Add playbook with context situation."""
+        if not BANDIT_AVAILABLE:
+            return self.add(intent_meta, playbook, score)
+        
+        k = self.context_key(intent_meta, situation)
+        arr = self.context_store.setdefault(k, [])
+        arr.append((playbook, score, situation))
         arr.sort(key=lambda x: x[1], reverse=True)
         if len(arr) > self.max_per_key:
             arr[:] = arr[:self.max_per_key]
@@ -118,17 +126,175 @@ class CacheLibrary:
         take = min(m, len(arr))
         return [pb for (pb, _) in random.sample(arr, take)]
 
+    def sample_contextual(self, intent_meta: Dict[str,Any], situation: str, m=2) -> List[Playbook]:
+        """Sample playbooks that worked well in similar situations."""
+        if not BANDIT_AVAILABLE:
+            return self.sample(intent_meta, m)
+        
+        # Try exact situation match first
+        k = self.context_key(intent_meta, situation)
+        arr = self.context_store.get(k, [])
+        
+        # If no exact match, try related situations
+        if not arr:
+            related_situations = self._get_related_situations(situation)
+            for related_sit in related_situations:
+                related_k = self.context_key(intent_meta, related_sit)
+                arr = self.context_store.get(related_k, [])
+                if arr:
+                    break
+        
+        # Fallback to general cache
+        if not arr:
+            return self.sample(intent_meta, m)
+        
+        take = min(m, len(arr))
+        return [pb for (pb, _, _) in random.sample(arr, take)]
+
+    def _get_related_situations(self, situation: str) -> List[str]:
+        """Get related network situations for fallback."""
+        related_map = {
+            "high_latency": ["poor_quality", "normal"],
+            "low_throughput": ["high_load", "normal"],
+            "high_error_rate": ["poor_quality", "normal"],
+            "high_load": ["low_throughput", "normal"],
+            "poor_quality": ["high_error_rate", "high_latency", "normal"],
+            "normal": ["poor_quality", "high_latency", "low_throughput"]
+        }
+        return related_map.get(situation, ["normal"])
+
 # -----------------------------
-# Proposer-side sampler
+# NEW: Contextual Action Weighting
+# -----------------------------
+
+class ContextualActionWeights:
+    """Calculate action weights based on network context."""
+    
+    def __init__(self):
+        # Define context-action weight mappings
+        self.situation_weights = {
+            "high_latency": {
+                ("SCHEDULER_POLICY", "MAX_THROUGHPUT"): 3.0,
+                ("SCHEDULER_POLICY", "PF"): 1.5,
+                ("SCHEDULER_POLICY", "RR"): 0.8,
+                ("MCS_CAP", 22): 2.0,
+                ("MCS_CAP", 18): 1.5,
+                ("MCS_CAP", 14): 1.0,
+                ("PRB_WEIGHT", 1.2): 1.8,
+                ("PRB_WEIGHT", 1.0): 1.0,
+                ("PRB_WEIGHT", 0.8): 0.7,
+            },
+            "low_throughput": {
+                ("SCHEDULER_POLICY", "PF"): 2.5,
+                ("SCHEDULER_POLICY", "MAX_THROUGHPUT"): 1.8,
+                ("SCHEDULER_POLICY", "RR"): 1.0,
+                ("MCS_CAP", 22): 2.2,
+                ("MCS_CAP", 18): 1.8,
+                ("MCS_CAP", 14): 0.8,
+                ("PRB_WEIGHT", 1.2): 3.0,
+                ("PRB_WEIGHT", 1.0): 1.5,
+                ("PRB_WEIGHT", 0.8): 0.5,
+            },
+            "high_error_rate": {
+                ("SCHEDULER_POLICY", "PF"): 2.0,
+                ("SCHEDULER_POLICY", "RR"): 1.5,
+                ("SCHEDULER_POLICY", "MAX_THROUGHPUT"): 1.0,
+                ("MCS_CAP", 14): 3.0,
+                ("MCS_CAP", 18): 2.0,
+                ("MCS_CAP", 22): 0.5,
+                ("PRB_WEIGHT", 1.2): 1.8,
+                ("PRB_WEIGHT", 1.0): 1.2,
+                ("PRB_WEIGHT", 0.8): 0.8,
+            },
+            "high_load": {
+                ("SCHEDULER_POLICY", "PF"): 2.5,
+                ("SCHEDULER_POLICY", "RR"): 1.2,
+                ("SCHEDULER_POLICY", "MAX_THROUGHPUT"): 1.5,
+                ("PRB_WEIGHT", 1.2): 2.0,
+                ("PRB_WEIGHT", 1.0): 1.5,
+                ("PRB_WEIGHT", 0.8): 0.5,
+                ("MCS_CAP", 18): 1.5,
+                ("MCS_CAP", 22): 1.2,
+                ("MCS_CAP", 14): 1.0,
+            },
+            "poor_quality": {
+                ("SCHEDULER_POLICY", "PF"): 2.2,
+                ("SCHEDULER_POLICY", "RR"): 1.8,
+                ("SCHEDULER_POLICY", "MAX_THROUGHPUT"): 1.0,
+                ("MCS_CAP", 14): 2.5,
+                ("MCS_CAP", 18): 2.0,
+                ("MCS_CAP", 22): 1.0,
+                ("PRB_WEIGHT", 1.0): 1.5,
+                ("PRB_WEIGHT", 1.2): 1.2,
+                ("PRB_WEIGHT", 0.8): 1.0,
+            },
+            "normal": {
+                # Balanced weights for normal conditions
+                ("SCHEDULER_POLICY", "PF"): 1.5,
+                ("SCHEDULER_POLICY", "MAX_THROUGHPUT"): 1.2,
+                ("SCHEDULER_POLICY", "RR"): 1.0,
+                ("MCS_CAP", 18): 1.5,
+                ("MCS_CAP", 22): 1.2,
+                ("MCS_CAP", 14): 1.0,
+                ("PRB_WEIGHT", 1.0): 1.5,
+                ("PRB_WEIGHT", 1.2): 1.2,
+                ("PRB_WEIGHT", 0.8): 1.0,
+            }
+        }
+
+    def get_action_weight(self, action: ControlAction, situation: str) -> float:
+        """Get weight for specific action in given situation."""
+        situation_map = self.situation_weights.get(situation, self.situation_weights["normal"])
+        
+        # Create action signature for lookup
+        if action.type == "SCHEDULER_POLICY":
+            policy = action.params.get("policy", "PF")
+            key = ("SCHEDULER_POLICY", policy)
+        elif action.type == "MCS_CAP":
+            mcs = action.params.get("dl_mcs_max", 18)
+            key = ("MCS_CAP", mcs)
+        elif action.type == "PRB_WEIGHT":
+            weight = action.params.get("weight", 1.0)
+            key = ("PRB_WEIGHT", weight)
+        elif action.type == "SLICE_QOS":
+            weight = action.params.get("weight", 1.0)
+            key = ("SLICE_QOS", weight)
+        else:
+            return 1.0  # Default weight for unknown actions
+        
+        return situation_map.get(key, 1.0)
+
+    def get_weighted_actions(self, all_actions: List[ControlAction], situation: str) -> List[ControlAction]:
+        """Get weighted action list for contextual sampling."""
+        weighted_actions = []
+        
+        for action in all_actions:
+            weight = self.get_action_weight(action, situation)
+            # Repeat actions based on weight (higher weight = more likely to be selected)
+            repeat_count = max(1, int(weight * 10))  # Scale weights to reasonable range
+            weighted_actions.extend([action] * repeat_count)
+        
+        return weighted_actions
+
+# -----------------------------
+# Enhanced Proposer-side sampler with contextual intelligence
 # -----------------------------
 
 class ProposerSampler:
+    def __init__(self):
+        if BANDIT_AVAILABLE:
+            self.contextual_weights = ContextualActionWeights()
+            print("[Proposer] Contextual bandit mode enabled")
+        else:
+            print("[Proposer] Basic mode (no contextual bandit)")
+
     @staticmethod
     def sample_playbooks(action_space: ActionSpace, N=CANDIDATE_N, K=PLAYBOOK_K,
                          cooldown_clock: Optional[Dict[Tuple[str,str,str], int]] = None,
                          cache: Optional[CacheLibrary] = None,
                          intent_meta: Optional[Dict[str,Any]] = None,
                          epsilon: float = 0.1) -> List[Playbook]:
+        """Original playbook sampling (fallback/compatibility)."""
         cooldown_clock = cooldown_clock or {}
         seeds = cache.sample(intent_meta, m=min(2, N)) if cache else []
         playbooks: List[Playbook] = []
@@ -162,11 +328,134 @@ class ProposerSampler:
         return playbooks
 
     @staticmethod
+    def sample_contextual_playbooks(action_space: ActionSpace, 
+                                   context: Optional['NetworkContext'] = None,
+                                   situation: str = "normal",
+                                   N=CANDIDATE_N, K=PLAYBOOK_K,
+                                   cooldown_clock: Optional[Dict[Tuple[str,str,str], int]] = None,
+                                   cache: Optional[CacheLibrary] = None,
+                                   intent_meta: Optional[Dict[str,Any]] = None,
+                                   epsilon: float = 0.1,
+                                   contextual_strength: float = 0.7) -> List[Playbook]:
+        """Enhanced contextual playbook sampling."""
+        
+        # Fallback to original if contextual bandit not available
+        if not BANDIT_AVAILABLE or context is None:
+            return ProposerSampler.sample_playbooks(
+                action_space, N, K, cooldown_clock, cache, intent_meta, epsilon
+            )
+        
+        cooldown_clock = cooldown_clock or {}
+        contextual_weights = ContextualActionWeights()
+        
+        # Get contextual seeds from cache
+        seeds = []
+        if cache:
+            contextual_seeds = cache.sample_contextual(intent_meta, situation, m=min(2, N))
+            regular_seeds = cache.sample(intent_meta, m=min(1, N-len(contextual_seeds)))
+            seeds = contextual_seeds + regular_seeds
+
+        playbooks: List[Playbook] = []
+
+        def contextual_random_playbook():
+            """Generate playbook with contextual action weighting."""
+            actions = []
+            all_acts = action_space.all_atomic_actions()
+            
+            # Apply contextual weighting
+            if random.random() < contextual_strength:  # Use contextual weighting
+                weighted_acts = contextual_weights.get_weighted_actions(all_acts, situation)
+            else:  # Use uniform sampling
+                weighted_acts = all_acts
+            
+            tries = 0
+            while len(actions) < K and tries < 50:
+                a = random.choice(weighted_acts)
+                if violates_cooldown(a, cooldown_clock):
+                    tries += 1; continue
+                if any(conflict(a, b) for b in actions):
+                    tries += 1; continue
+                actions.append(a)
+                tries = 0  # Reset tries on successful addition
+            
+            # Fill remaining slots with NOOP if needed
+            if len(actions) < K:
+                actions += [ControlAction("REPORTING","CELL",params={"noop":True})] * (K - len(actions))
+            
+            return Playbook(actions)
+
+        def contextual_mutate_playbook(pb: Playbook) -> Playbook:
+            """Mutate playbook with contextual awareness."""
+            if not pb.actions:
+                return contextual_random_playbook()
+            
+            idx = random.randrange(len(pb.actions))
+            new_actions = pb.actions.copy()
+            all_acts = action_space.all_atomic_actions()
+            
+            # Apply contextual weighting to mutation candidates
+            if random.random() < contextual_strength:
+                weighted_acts = contextual_weights.get_weighted_actions(all_acts, situation)
+            else:
+                weighted_acts = all_acts
+            
+            for _ in range(20):
+                cand = random.choice(weighted_acts)
+                if violates_cooldown(cand, cooldown_clock):
+                    continue
+                tmp = new_actions.copy()
+                tmp[idx] = cand
+                if any(conflict(tmp[i], tmp[j]) for i in range(len(tmp)) for j in range(i+1,len(tmp))):
+                    continue
+                new_actions = tmp
+                break
+            
+            return Playbook(new_actions)
+
+        # Process seeds with contextual mutation
+        for s in seeds:
+            if random.random() < epsilon:
+                pb = contextual_mutate_playbook(s)
+            else:
+                pb = s
+            playbooks.append(pb)
+
+        # Fill remaining slots with contextual random playbooks
+        while len(playbooks) < N:
+            playbooks.append(contextual_random_playbook())
+        
+        # Add metadata to track contextual generation
+        for pb in playbooks:
+            if hasattr(pb, 'metadata'):
+                pb.metadata.update({
+                    "generation_method": "contextual_bandit",
+                    "context_situation": situation,
+                    "contextual_strength": contextual_strength,
+                    "context_metrics": {
+                        "latency_ms": context.latency_ms if context else None,
+                        "throughput_dl_mbps": context.throughput_dl_mbps if context else None,
+                        "bler": context.bler if context else None,
+                        "network_load": context.network_load if context else None
+                    }
+                })
+            elif hasattr(pb, 'actions'):
+                # Add simple metadata if playbook doesn't have metadata attribute
+                pb.context_situation = situation
+                pb.generation_method = "contextual_bandit"
+        
+        return playbooks
+
+    @staticmethod
     def mutate_playbook(pb: Playbook, action_space: ActionSpace,
                         cooldown_clock: Dict[Tuple[str,str,str], int]) -> Playbook:
+        """Original mutation method (kept for compatibility)."""
+        if not pb.actions:
+            return pb
+        
         idx = random.randrange(len(pb.actions))
         new_actions = pb.actions.copy()
         all_acts = action_space.all_atomic_actions()
+        
         for _ in range(20):
             cand = random.choice(all_acts)
             if violates_cooldown(cand, cooldown_clock):
@@ -177,4 +466,54 @@ class ProposerSampler:
                 continue
             new_actions = tmp
             break
+        
         return Playbook(new_actions)
+
+    @staticmethod
+    def analyze_playbook_context_fit(playbook: Playbook, context: 'NetworkContext', situation: str) -> Dict[str, Any]:
+        """Analyze how well a playbook fits the current network context."""
+        if not BANDIT_AVAILABLE or not context:
+            return {"fit_score": 0.5, "analysis": "contextual analysis not available"}
+        
+        contextual_weights = ContextualActionWeights()
+        
+        total_weight = 0.0
+        action_analysis = []
+        
+        for action in playbook.actions:
+            if action.type == "REPORTING" and action.params.get("noop"):
+                continue  # Skip NOOP actions
+            
+            weight = contextual_weights.get_action_weight(action, situation)
+            total_weight += weight
+            
+            action_analysis.append({
+                "action_type": action.type,
+                "params": action.params,
+                "context_weight": weight,
+                "fit_assessment": "good" if weight > 1.5 else "neutral" if weight > 0.8 else "poor"
+            })
+        
+        # Calculate overall fit score
+        if len(action_analysis) > 0:
+            avg_weight = total_weight / len(action_analysis)
+            fit_score = min(1.0, avg_weight / 2.0)  # Normalize to [0, 1]
+        else:
+            fit_score = 0.5  # Neutral for NOOP-only playbooks
+        
+        return {
+            "fit_score": fit_score,
+            "avg_action_weight": avg_weight if len(action_analysis) > 0 else 1.0,
+            "situation": situation,
+            "action_count": len(action_analysis),
+            "actions_analysis": action_analysis,
+            "context_summary": {
+                "latency_ms": context.latency_ms,
+                "throughput_dl_mbps": context.throughput_dl_mbps,
+                "bler": context.bler,
+                "network_load": context.network_load
+            }
+        }
+
+# Create a global instance for convenience
+contextual_proposer = ProposerSampler() if BANDIT_AVAILABLE else None

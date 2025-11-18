@@ -19,6 +19,7 @@ pyarrow = ">=21.0.0,<22.0.0"
 numba = "^0.62.0"
 llvmlite = "^0.45.0"
 matplotlib = "^3.10.6"
+torch = "^2.9.1"
 
 [tool.poetry.scripts]
 train_minirocket = "src.demo.ain.pipeline.train_minirocket:main"

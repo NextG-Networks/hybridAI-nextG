@@ -44,6 +44,14 @@ from ain.loop.actor import Actor, ControlAction as AControlAction, Playbook as A
 from ain.brain.llm_reasoner import normalize_deviation, to_proposer_meta, to_rl_intent
 from ain.brain.openai_client import reason_from_deviation, OpenAIError, fallback_intent_for_deviation
 
+# NEW: Import contextual bandit components
+try:
+    from ain.bandit.context_extractor import NetworkContext
+    CONTEXTUAL_BANDIT_AVAILABLE = True
+    print("[Demo] Contextual bandit components available")
+except ImportError:
+    CONTEXTUAL_BANDIT_AVAILABLE = False
+    print("[Demo] Contextual bandit components not found. Using basic mode.")
 
 # ----------------------------
 # Helpers
@@ -131,6 +139,61 @@ def to_actor_playbook(pb, scope_hint: str | None = None) -> APlaybook:
         ))
     return APlaybook(actions=acts)
 
+# NEW: Context-aware helpers
+def classify_network_situation_simple(kpi: Dict[str, Any]) -> str:
+    """Simple network situation classification from KPI data."""
+    if not kpi:
+        return "unknown"
+    
+    cell = kpi.get("CellMetrics", {})
+    latency = float(cell.get("delay_p95_ms", 50.0))
+    throughput_dl = float(cell.get("thr_dl_bps", 50000000)) / 1e6  # Convert to Mbps
+    bler = float(cell.get("bler_dl", 0.01))
+    prb_usage = float(cell.get("prb_used_dl", 50)) / 100.0
+    ue_count = float(cell.get("active_ue_count", 20))
+    
+    # Multi-criteria classification
+    issues = []
+    if latency > 70:
+        issues.append("high_latency")
+    if throughput_dl < 50:
+        issues.append("low_throughput")
+    if bler > 0.05:
+        issues.append("high_error_rate")
+    if prb_usage > 0.8 or ue_count > 80:
+        issues.append("high_load")
+    
+    if not issues:
+        return "normal"
+    elif len(issues) == 1:
+        return issues[0]
+    else:
+        # Multiple issues - prioritize
+        if "high_latency" in issues:
+            return "high_latency"
+        elif "high_error_rate" in issues:
+            return "high_error_rate"
+        else:
+            return issues[0]
+
+def get_context_info_string(context: 'NetworkContext' = None, situation: str = "unknown") -> str:
+    """Get readable context information string."""
+    if not context:
+        return f"[Situation: {situation}]"
+    
+    return (f"[Context: lat={context.latency_ms:.1f}ms, "
+           f"thr={context.throughput_dl_mbps:.1f}Mbps, "
+           f"bler={context.bler:.3f}, "
+           f"load={context.network_load:.2f}, "
+           f"situation={situation}]")
+
+def analyze_playbook_contextual_fitness(playbook, context: 'NetworkContext' = None, situation: str = "normal") -> Dict[str, Any]:
+    """Analyze how well a playbook fits the current context."""
+    if not CONTEXTUAL_BANDIT_AVAILABLE or not context:
+        return {"fit_score": 0.5, "analysis": "contextual analysis not available"}
+    
+    return ProposerSampler.analyze_playbook_context_fit(playbook, context, situation)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--steps", type=int, default=30, help="Max steps for one intent lifecycle")
@@ -143,19 +206,46 @@ def main():
     ap.add_argument("--ext-metric", type=str, default=None, help="External SLO metric (e.g., thr_dl_bps)")
     ap.add_argument("--ext-target", type=float, default=None, help="External SLO target value")
     ap.add_argument("--offline-model", type=str, default=None, help="Path to trained Q model (e.g., models/qnet_offline.pt)")
+    
+    # NEW: Contextual bandit arguments
+    ap.add_argument("--enable-contextual-bandit", action="store_true", default=True, 
+                    help="Enable contextual bandit intelligence (default: True)")
+    ap.add_argument("--disable-contextual-bandit", action="store_true", 
+                    help="Disable contextual bandit intelligence")
+    ap.add_argument("--contextual-strength", type=float, default=0.7, 
+                    help="Contextual weighting strength (0.0=random, 1.0=full contextual)")
+    ap.add_argument("--show-context-analysis", action="store_true", 
+                    help="Show detailed context fitness analysis")
+    ap.add_argument("--context-cache-size", type=int, default=20, 
+                    help="Size of contextual cache per situation")
+    
     args = ap.parse_args()
+
+    # Process contextual bandit settings
+    enable_contextual_bandit = (args.enable_contextual_bandit and not args.disable_contextual_bandit 
+                               and CONTEXTUAL_BANDIT_AVAILABLE)
+    
+    if args.disable_contextual_bandit:
+        enable_contextual_bandit = False
+        print("[Demo] Contextual bandit explicitly disabled")
+    elif not CONTEXTUAL_BANDIT_AVAILABLE:
+        enable_contextual_bandit = False
+        print("[Demo] Contextual bandit not available - using basic mode")
+    else:
+        print(f"[Demo] Contextual bandit enabled (strength={args.contextual_strength})")
 
     # Optional KPI generator
     kpi_proc = None
     if not args.no_spawn_kpi:
-        kpi_proc = spawn_fake_kpi()
+        kmp_proc = spawn_fake_kpi()
+        print("[Demo] Started fake KPI generator")
 
     try:
         # Build components (temporary intent so RLObserver can start reading)
         cells = ["CELL_001", "CELL_002"]
         slices = ["SLICE_A", "SLICE_B"]
         action_space = ActionSpace(cells=cells, slices=slices)
-        cache = CacheLibrary(max_per_key=20)
+        cache = CacheLibrary(max_per_key=args.context_cache_size)
 
         tmp_intent = Intent(type="REDUCE_LATENCY", metric="delay_p95_ms", target=args.target)
         predictor = SlateDQNPredictor(action_space, feat_dim=len(RLObserver(None, tmp_intent).features), seed=0)
@@ -165,7 +255,10 @@ def main():
                 print(f"[Predictor] Loaded offline weights from {args.offline_model}")
             except Exception as e:
                 print(f"[Predictor] Could not load offline weights ({e}). Using fresh model.")
-        observer = RLObserver(predictor, intent=tmp_intent, kpi_file="fake_kpi_stream.json", window=12)
+        
+        # Enhanced observer with contextual bandit support
+        observer = RLObserver(predictor, intent=tmp_intent, kpi_file="fake_kpi_stream.json", 
+                            window=12, enable_contextual_bandit=enable_contextual_bandit)
         actor = Actor(out_dir=args.out_dir)
 
         cooldown_clock: Dict = {}
@@ -174,6 +267,8 @@ def main():
         step = 0
         net_intent = None
         intent_meta = {"intent":"LATENCY_P95", "scope":"GLOBAL"}  # will be replaced
+        current_situation = "unknown"
+        
         print("[Demo] Waiting for KPI stream...")
 
         while step < args.steps:
@@ -187,6 +282,18 @@ def main():
             curr = float(cell.get(observer.intent.metric, 0.0))
             hit = (curr <= observer.intent.target) if observer.intent.direction == "lower_better" else (curr >= observer.intent.target)
             success_streak = success_streak + 1 if hit else 0
+
+            # NEW: Get context information
+            current_context = None
+            context_info = ""
+            
+            if enable_contextual_bandit:
+                current_context = observer.get_current_context()
+                current_situation = observer.get_context_situation()
+                context_info = get_context_info_string(current_context, current_situation)
+            else:
+                current_situation = classify_network_situation_simple(latest)
+                context_info = f"[Situation: {current_situation}]"
 
             # Bootstrap intent on step==0 (or you could refresh on any condition)
             if step == 0:
@@ -226,17 +333,33 @@ def main():
                 observer.intent = new_intent
                 print(f"[Reasoner] Intent set from deviation: {observer.intent}  (scope={intent_meta['scope']})")
 
-            # Proposer candidates
+            # NEW: Enhanced proposer with contextual intelligence
             print(f"[Proposer] Generating {CANDIDATE_N} candidate playbooks (ε={predictor.epsilon():.3f})...")
-            candidates = ProposerSampler.sample_playbooks(
-                action_space, N=CANDIDATE_N, K=PLAYBOOK_K,
-                cooldown_clock=cooldown_clock,
-                cache=cache, 
-                intent_meta=intent_meta, 
-                epsilon=predictor.epsilon()
-            )
-            print(f"[Proposer] → {len(candidates)} playbooks generated.")
-
+            
+            if enable_contextual_bandit and current_context:
+                # Use contextual bandit proposer
+                candidates = ProposerSampler.sample_contextual_playbooks(
+                    action_space=action_space, 
+                    context=current_context,
+                    situation=current_situation,
+                    N=CANDIDATE_N, K=PLAYBOOK_K,
+                    cooldown_clock=cooldown_clock,
+                    cache=cache, 
+                    intent_meta=intent_meta, 
+                    epsilon=predictor.epsilon(),
+                    contextual_strength=args.contextual_strength
+                )
+                print(f"[Proposer] → {len(candidates)} contextual playbooks generated {context_info}")
+            else:
+                # Use original proposer
+                candidates = ProposerSampler.sample_playbooks(
+                    action_space, N=CANDIDATE_N, K=PLAYBOOK_K,
+                    cooldown_clock=cooldown_clock,
+                    cache=cache, 
+                    intent_meta=intent_meta, 
+                    epsilon=predictor.epsilon()
+                )
+                print(f"[Proposer] → {len(candidates)} standard playbooks generated {context_info}")
 
             # Predictor scoring
             print(f"[Predictor] Evaluating Q-values for {len(candidates)} candidates...")
@@ -244,6 +367,15 @@ def main():
             scored.sort(key=lambda x: x[1], reverse=True)
             best_pb, best_q = scored[0]
             print(f"[Predictor] → Best Q={best_q:.3f}")
+
+            # NEW: Context fitness analysis
+            if args.show_context_analysis and enable_contextual_bandit and current_context:
+                fitness = analyze_playbook_contextual_fitness(best_pb, current_context, current_situation)
+                print(f"[Context] → Playbook fitness score: {fitness['fit_score']:.3f}")
+                if fitness['fit_score'] < 0.3:
+                    print(f"[Context] → Warning: Low context fitness for {current_situation} situation")
+                elif fitness['fit_score'] > 0.7:
+                    print(f"[Context] → Good context fitness for {current_situation} situation")
 
             # Cooldown bookkeeping
             for a in best_pb.actions:
@@ -254,7 +386,9 @@ def main():
                 if cooldown_clock[k] <= 0:
                     cooldown_clock.pop(k, None)
 
-            # Cache
+            # Enhanced cache with contextual awareness
+            if enable_contextual_bandit:
+                cache.add_contextual(intent_meta, best_pb, best_q, current_situation)
             cache.add(intent_meta, best_pb, best_q)
 
             print(f"[t={step:03d}] metric={observer.intent.metric}={curr:.2f}  hit={hit} streak={success_streak}  "
@@ -262,17 +396,51 @@ def main():
             for i, a in enumerate(best_pb.actions):
                 print(f"   • A{i+1}: {a.type} {a.scope} cell={a.cell_id} slice={a.slice_id} params={a.params}")
 
+            # NEW: Show context summary if enabled
+            if enable_contextual_bandit and step % 5 == 0:  # Every 5 steps
+                context_summary = observer.get_context_history_summary()
+                if context_summary:
+                    print(f"[Context] Recent trend: {context_summary.get('situation_trend', [])} "
+                          f"(avg_lat={context_summary.get('avg_latency', 0):.1f}ms, "
+                          f"avg_thr={context_summary.get('avg_throughput', 0):.1f}Mbps)")
+
             # Save JSON per cadence or on success
             print(f"[Actor] Saving selected playbook (step={step}) with Q={best_q:.3f}")
             if (step % max(1, args.save_every) == 0) or (success_streak >= args.success_streak):
                 actor_pb = to_actor_playbook(best_pb)
+                
+                # Enhanced payload with contextual metadata
+                extra_meta = {
+                    "q_score": best_q, 
+                    "step": step, 
+                    "scope": intent_meta.get("scope","GLOBAL")
+                }
+                
+                if enable_contextual_bandit and current_context:
+                    extra_meta.update({
+                        "contextual_bandit": True,
+                        "network_situation": current_situation,
+                        "contextual_strength": args.contextual_strength,
+                        "context_metrics": {
+                            "latency_ms": current_context.latency_ms,
+                            "throughput_dl_mbps": current_context.throughput_dl_mbps,
+                            "bler": current_context.bler,
+                            "network_load": current_context.network_load
+                        }
+                    })
+                else:
+                    extra_meta.update({
+                        "contextual_bandit": False,
+                        "network_situation": current_situation
+                    })
+                
                 payload = actor.make_payload(
                     playbook=actor_pb,
                     intent={"type": observer.intent.type, "metric": observer.intent.metric, "target": observer.intent.target},
-                    extra_meta={"q_score": best_q, "step": step, "scope": intent_meta.get("scope","GLOBAL")}
+                    extra_meta=extra_meta
                 )
                 out_path = actor.save_payload(payload)
-            print(f"[Actor] → Playbook saved to {out_path}")
+                print(f"[Actor] → Playbook saved to {out_path}")
 
             last_playbook = best_pb
             predictor.steps += 1
@@ -280,6 +448,11 @@ def main():
 
             if success_streak >= args.success_streak:
                 print(f"[Demo] Intent achieved for {success_streak} consecutive readings. Stopping.")
+                if enable_contextual_bandit:
+                    print(f"[Demo] Final situation: {current_situation}")
+                    final_summary = observer.get_context_history_summary()
+                    if final_summary:
+                        print(f"[Demo] Session summary: {len(final_summary.get('situation_trend', []))} context transitions")
                 break
 
             time.sleep(0.5)
@@ -292,6 +465,20 @@ def main():
                 kpi_proc.wait(timeout=3)
             except Exception:
                 pass
+
+        # NEW: Print contextual bandit session summary
+        if enable_contextual_bandit:
+            print("\n[Demo] Contextual Bandit Session Summary:")
+            print(f"  - Contextual strength: {args.contextual_strength}")
+            print(f"  - Final situation: {current_situation}")
+            print(f"  - Total steps: {step}")
+            if hasattr(observer, 'get_context_history_summary'):
+                summary = observer.get_context_history_summary()
+                if summary:
+                    situations = summary.get('situation_trend', [])
+                    unique_situations = set(situations)
+                    print(f"  - Situations encountered: {unique_situations}")
+                    print(f"  - Context transitions: {len(situations)}")
 
 
 if __name__ == "__main__":
