@@ -41,6 +41,7 @@ class RLObserver:
         use_internal_encoder: bool = False,
         device: Optional[torch.device] = None,
         enable_contextual_bandit: bool = True,  # NEW: Feature flag
+        min_feature_completeness: float = 0.5,  # Minimum fraction of features that must be present (0.0-1.0)
     ):
         self.predictor = predictor
         self.intent = intent
@@ -51,6 +52,7 @@ class RLObserver:
         self.last_kpi_raw: Optional[Dict] = None
         self.last_state_win: Optional[np.ndarray] = None  # [W, F]
         self.use_internal_encoder = use_internal_encoder
+        self.min_feature_completeness = min_feature_completeness
 
         # NEW: Contextual bandit components
         self.enable_contextual_bandit = enable_contextual_bandit and BANDIT_AVAILABLE
@@ -102,34 +104,89 @@ class RLObserver:
             return None
         return stream[-1]
 
-    def _extract_features_row(self, kpi: Dict) -> np.ndarray:
+    def _extract_features_row(self, kpi: Dict) -> Tuple[np.ndarray, float]:
+        """
+        Extract features from KPI, using NaN for missing values.
+        
+        Returns:
+            (feature_vector, completeness): feature array and fraction of features present (0.0-1.0)
+        """
         cell = kpi.get("CellMetrics", {})
-        # derived ratios
-        prb_total = max(float(cell.get("prb_total", 1.0)), 1.0)
-        prb_used_dl = float(cell.get("prb_used_dl", 0.0))
+        
+        # For derived ratios, we need to check if base values exist
+        prb_total = cell.get("prb_total")
+        prb_used_dl = cell.get("prb_used_dl")
+        
         # build feature vector in configured order
         vals: List[float] = []
+        present_count = 0
+        
         for name in self.features:
             if name == "prb_used_dl_ratio":
-                v = prb_used_dl / prb_total
+                # Derived feature: only valid if both base values exist
+                if prb_used_dl is not None and prb_total is not None and prb_total > 0:
+                    v = float(prb_used_dl) / max(float(prb_total), 1.0)
+                    present_count += 1
+                else:
+                    v = np.nan
             else:
-                v = float(cell.get(name, 0.0))
-            # scale
-            scale = self.scalers.get(name, 1.0)
-            v = v / scale
+                # Direct feature: check if present in cell metrics
+                if name in cell and cell[name] is not None:
+                    try:
+                        v = float(cell[name])
+                        present_count += 1
+                    except (ValueError, TypeError):
+                        v = np.nan
+                else:
+                    v = np.nan
+            
+            # scale (only if value is not NaN)
+            if not np.isnan(v):
+                scale = self.scalers.get(name, 1.0)
+                v = v / scale
+            
             vals.append(v)
-        return np.asarray(vals, dtype=np.float32)
+        
+        completeness = present_count / len(self.features) if self.features else 0.0
+        return np.asarray(vals, dtype=np.float32), completeness
 
     def _update_window(self, row: np.ndarray) -> np.ndarray:
+        """
+        Update window buffer and forward-fill NaN values from previous entries.
+        This allows the system to work with partial data while waiting for complete features.
+        """
         from copy import deepcopy
         self.buf.append(row)
-        if len(self.buf) < self.window:
-            # Left-pad with the first row until window is full (simple pad)
-            first = deepcopy(self.buf[0])
-            padded = [first] * (self.window - len(self.buf)) + list(self.buf)
+        
+        # Forward-fill NaN values: use the last valid value for each feature
+        filled_buf = []
+        last_valid = None
+        for entry in self.buf:
+            if last_valid is None:
+                # First entry - use as-is (may have NaNs)
+                filled_entry = entry.copy()
+            else:
+                # Fill NaNs with last valid values
+                filled_entry = entry.copy()
+                nan_mask = np.isnan(filled_entry)
+                filled_entry[nan_mask] = last_valid[nan_mask]
+            
+            # Update last_valid with non-NaN values from this entry
+            if last_valid is None:
+                last_valid = filled_entry.copy()
+            else:
+                valid_mask = ~np.isnan(filled_entry)
+                last_valid[valid_mask] = filled_entry[valid_mask]
+            
+            filled_buf.append(filled_entry)
+        
+        if len(filled_buf) < self.window:
+            # Left-pad with the first filled entry until window is full
+            first = deepcopy(filled_buf[0]) if filled_buf else row
+            padded = [first] * (self.window - len(filled_buf)) + filled_buf
             win = np.stack(padded, axis=0)
         else:
-            win = np.stack(list(self.buf), axis=0)
+            win = np.stack(filled_buf, axis=0)
         self.last_state_win = win
         return win  # [W, F]
 
@@ -260,18 +317,26 @@ class RLObserver:
         return min(bonus, 0.5)  # Maximum 0.5 bonus per playbook
 
     def _extract_metrics_dict(self, kpi: Dict) -> Dict[str, float]:
-        """Extract metrics as dictionary for reward calculation."""
+        """Extract metrics as dictionary for reward calculation, using NaN for missing values."""
         cell = kpi.get("CellMetrics", {})
+        def safe_float(val, default=np.nan):
+            if val is None:
+                return default
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return default
+        
         return {
-            "delay_p95_ms": float(cell.get("delay_p95_ms", 0.0)),
-            "thr_dl_bps": float(cell.get("thr_dl_bps", 0.0)),
-            "thr_ul_bps": float(cell.get("thr_ul_bps", 0.0)),
-            "bler_dl": float(cell.get("bler_dl", 0.0)),
-            "bler_ul": float(cell.get("bler_ul", 0.0)),
-            "cqi_avg": float(cell.get("cqi_avg", 0.0)),
-            "mcs_dl_avg": float(cell.get("mcs_dl_avg", 0.0)),
-            "active_ue_count": float(cell.get("active_ue_count", 0.0)),
-            "prb_used_dl": float(cell.get("prb_used_dl", 0.0)),
+            "delay_p95_ms": safe_float(cell.get("delay_p95_ms")),
+            "thr_dl_bps": safe_float(cell.get("thr_dl_bps")),
+            "thr_ul_bps": safe_float(cell.get("thr_ul_bps")),
+            "bler_dl": safe_float(cell.get("bler_dl")),
+            "bler_ul": safe_float(cell.get("bler_ul")),
+            "cqi_avg": safe_float(cell.get("cqi_avg")),
+            "mcs_dl_avg": safe_float(cell.get("mcs_dl_avg")),
+            "active_ue_count": safe_float(cell.get("active_ue_count")),
+            "prb_used_dl": safe_float(cell.get("prb_used_dl")),
         }
 
     # ---------- Enhanced Reward Calculation ----------
@@ -281,8 +346,19 @@ class RLObserver:
         target = self.intent.target
         direction = self.intent.direction
 
-        prev = float(prev_kpi.get("CellMetrics", {}).get(metric, 0.0))
-        curr = float(curr_kpi.get("CellMetrics", {}).get(metric, 0.0))
+        prev_cell = prev_kpi.get("CellMetrics", {})
+        curr_cell = curr_kpi.get("CellMetrics", {})
+        
+        # Handle missing values gracefully
+        prev_val = prev_cell.get(metric)
+        curr_val = curr_cell.get(metric)
+        
+        # If either value is missing, return neutral reward
+        if prev_val is None or curr_val is None or np.isnan(prev_val) or np.isnan(curr_val):
+            return 0.0
+        
+        prev = float(prev_val)
+        curr = float(curr_val)
 
         if direction == "lower_better":
             delta_raw = (prev - curr)
@@ -333,23 +409,32 @@ class RLObserver:
 
     # ---------- Public API ----------
     def step(self, last_playbook) -> Optional[np.ndarray]:
-        """Enhanced step with contextual intelligence."""
+        """Enhanced step with contextual intelligence and feature completeness checking."""
         kpi = self._read_latest_kpi()
         if kpi is None:
             return None
 
-        # NEW: Extract context
+        # Extract features and check completeness
+        row, completeness = self._extract_features_row(kpi)
+        
+        # Check if we have enough features to proceed
+        if completeness < self.min_feature_completeness:
+            # Not enough features - skip this step but still update buffer with NaN values
+            # This allows the window to accumulate data over time
+            self.buf.append(row)
+            return None  # Don't return state until we have enough features
+        
+        # NEW: Extract context (only if we have enough features)
         if self.enable_contextual_bandit:
             context = self._extract_context(kpi)
             if context:
                 self.current_context = context
                 self._update_context_history(context)
 
-        row = self._extract_features_row(kpi)
         s2 = self._update_window(row)  # [W, F]
 
         # If we have a previous KPI, compute reward and push to replay
-        if self.last_kpi_raw is not None and self.last_state_win is not None:
+        if self.last_kpi_raw is not None and self.last_state_win is not None and last_playbook is not None:
             s = self.last_state_win  # previous window [W, F]
             
             # Enhanced reward calculation

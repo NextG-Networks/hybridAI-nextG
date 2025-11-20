@@ -24,11 +24,24 @@ class PredictorAgent:
                     self.state = msg.payload["state"]
                 elif msg.topic == "proposer.candidates" and self.state is not None:
                     playbooks = msg.payload["candidates"]
-                    scored = self.model.score_playbooks(self.state, playbooks)
+                    print(f"[Predictor] Scoring {len(playbooks)} playbooks...")
+                    
+                    # Convert state to numpy array if needed
+                    import numpy as np
+                    if isinstance(self.state, list):
+                        state_array = np.array(self.state)
+                    else:
+                        state_array = self.state
+                    
+                    scored = self.model.score_playbooks(state_array, playbooks)
+                    print(f"[Predictor] Scored {len(scored)} playbooks, best Q={max(q for _, q in scored):.3f}")
+                    
                     await self.bus.pub("predictor.scored", make_msg(
                         "predictor.scored", "SCORED", "scored.v1",
                         {"scored": [(pb, float(q)) for pb, q in scored]}
                     ))
+                elif msg.topic == "proposer.candidates" and self.state is None:
+                    print("[Predictor] Received candidates but no state yet, waiting...")
 
     async def _online_trainer(self):
         q = await self.bus.sub("predictor.train.sample")
