@@ -12,6 +12,7 @@ This script:
 from __future__ import annotations
 import argparse
 import asyncio
+import csv
 import json
 import struct
 import sys
@@ -61,6 +62,56 @@ class XAppKPIAdapter:
         measurements = kpi_data.get("measurements", [])
         ues = kpi_data.get("ues", [])
         
+        # Extract UE metrics from ues array
+        # Based on ue_kpis.csv: timestamp,meid,cell_id,ue_id,UE_PDCP_Delay_DL_ms,...
+        if ues:
+            for ue in ues:
+                ue_metric = {}
+                ue_id = ue.get("ue_id") or ue.get("ueId") or ue.get("id")
+                if not ue_id:
+                    continue
+                
+                ue_metric["ue_id"] = str(ue_id)
+                ue_metric["cell_id"] = ue.get("cell_id") or ue.get("cellId") or cell_metrics.get("cell_id", "unknown")
+                
+                # Extract UE-specific metrics
+                if "UE_PDCP_Delay_DL_ms" in ue:
+                    ue_metric["delay_p95_ms"] = float(ue["UE_PDCP_Delay_DL_ms"])
+                if "UE_Throughput_DL_Mbps" in ue:
+                    ue_metric["thr_dl_bps"] = float(ue["UE_Throughput_DL_Mbps"]) * 1e6
+                if "UE_PRB_Used_DL" in ue:
+                    ue_metric["prb_used_dl"] = float(ue["UE_PRB_Used_DL"])
+                
+                # Extract from nested measurements if available
+                ue_measurements = ue.get("measurements", [])
+                for m in ue_measurements:
+                    name = m.get("name", "").lower()
+                    value = m.get("value", 0)
+                    if "delay" in name or "latency" in name:
+                        ue_metric["delay_p95_ms"] = float(value)
+                    elif "throughput" in name or "thr" in name:
+                        if "dl" in name:
+                            ue_metric["thr_dl_bps"] = float(value) * 1e6
+                        elif "ul" in name:
+                            ue_metric["thr_ul_bps"] = float(value) * 1e6
+                    elif "prb" in name and "used" in name:
+                        ue_metric["prb_used_dl"] = float(value)
+                    elif "bler" in name:
+                        if "dl" in name:
+                            ue_metric["bler_dl"] = float(value) / 100.0
+                        elif "ul" in name:
+                            ue_metric["bler_ul"] = float(value) / 100.0
+                    elif "cqi" in name:
+                        ue_metric["cqi_avg"] = float(value)
+                    elif "mcs" in name:
+                        if "dl" in name:
+                            ue_metric["mcs_dl_avg"] = int(value)
+                        elif "ul" in name:
+                            ue_metric["mcs_ul_avg"] = int(value)
+                
+                if ue_metric:
+                    ue_metrics.append(ue_metric)
+        
         # If measurements are provided, extract them
         if measurements:
             for m in measurements:
@@ -103,8 +154,18 @@ class XAppKPIAdapter:
             # Can use this for MCS estimation if needed
             pass
         
-        # Set defaults for missing values
-        cell_metrics.setdefault("cell_id", kpi_data.get("cellObjectID", "CELL_001"))
+        # Normalize and set cell_id
+        cell_id_raw = kpi_data.get("cellObjectID") or kpi_data.get("cell_id") or "CELL_001"
+        # Normalize cell_id: convert numeric strings to CELL_XXX format
+        if cell_id_raw and str(cell_id_raw).isdigit():
+            cell_id = f"CELL_{cell_id_raw}"
+        elif cell_id_raw and cell_id_raw.startswith("CELL_"):
+            cell_id = cell_id_raw
+        elif cell_id_raw != "unknown":
+            cell_id = f"CELL_{cell_id_raw}" if not cell_id_raw.startswith("CELL_") else cell_id_raw
+        else:
+            cell_id = "CELL_001"
+        cell_metrics.setdefault("cell_id", cell_id)
         cell_metrics.setdefault("prb_total", 100.0)
         cell_metrics.setdefault("thr_dl_bps", 0.0)
         cell_metrics.setdefault("thr_ul_bps", 0.0)
@@ -140,7 +201,14 @@ class PlaybookToCommandConverter:
     """Converts playbook actions to xApp control commands."""
     
     @staticmethod
-    def playbook_to_commands(playbook: Playbook, meid: str, node_id: int = 0) -> List[Dict[str, Any]]:
+    def playbook_to_commands(
+        playbook: Playbook, 
+        meid: str, 
+        node_id: int = 0,
+        cell_to_node_map: Optional[Dict[str, int]] = None,
+        ue_to_node_map: Optional[Dict[str, int]] = None,
+        ue_to_cell_map: Optional[Dict[str, str]] = None
+    ) -> List[Dict[str, Any]]:
         """
         Convert playbook actions to xApp control commands.
         
@@ -150,28 +218,89 @@ class PlaybookToCommandConverter:
         - SCHEDULER_POLICY -> (not directly supported, skip or log)
         - SLICE_QOS -> (not directly supported, skip or log)
         - REPORTING -> (no-op, skip)
+        
+        Args:
+            playbook: Playbook with actions
+            meid: Management entity ID
+            node_id: Default node ID
+            cell_to_node_map: Optional mapping from cell_id to node_id
+            ue_to_node_map: Optional mapping from ue_id to node_id
+            ue_to_cell_map: Optional mapping from ue_id to cell_id
         """
         commands = []
+        cell_to_node_map = cell_to_node_map or {}
+        ue_to_node_map = ue_to_node_map or {}
+        ue_to_cell_map = ue_to_cell_map or {}
         
         for action in playbook.actions:
             cmd = None
             
+            # Determine node_id for this action:
+            # 1. Check if action.params has explicit "node"
+            # 2. For UE-scoped actions: check ue_to_node_map
+            # 3. For CELL-scoped actions: check cell_to_node_map
+            # 4. Fall back to default node_id
+            action_node_id = action.params.get("node", node_id)
+            
+            if action.scope == "UE" and action.ue_id:
+                # UE-scoped action: try to get node_id from UE mapping
+                if action.ue_id in ue_to_node_map:
+                    action_node_id = ue_to_node_map[action.ue_id]
+                    logger.info(f"Using node_id={action_node_id} for UE {action.ue_id} from mapping")
+                elif action.ue_id in ue_to_cell_map:
+                    # Try via cell mapping
+                    cell_id = ue_to_cell_map[action.ue_id]
+                    if cell_id in cell_to_node_map:
+                        action_node_id = cell_to_node_map[cell_id]
+                        logger.info(f"Using node_id={action_node_id} for UE {action.ue_id} via cell {cell_id}")
+                else:
+                    logger.warning(f"No node mapping found for UE {action.ue_id}, using default node_id={action_node_id}")
+            
+            elif action.scope == "CELL" and action.cell_id:
+                # CELL-scoped action: try to get node_id from cell mapping
+                if action.cell_id in cell_to_node_map:
+                    action_node_id = cell_to_node_map[action.cell_id]
+                    logger.info(f"Using node_id={action_node_id} for cell {action.cell_id} from mapping")
+                else:
+                    # Fallback: if configured cell_id not found, use the first available cell from KPIs
+                    # This handles the case where system is configured with CELL_001 but xApp sends CELL_1111
+                    if cell_to_node_map:
+                        actual_cell_id = list(cell_to_node_map.keys())[0]
+                        action_node_id = cell_to_node_map[actual_cell_id]
+                        logger.warning(f"No node mapping found for configured cell {action.cell_id}, using actual cell {actual_cell_id} with node_id={action_node_id}. Available cells: {list(cell_to_node_map.keys())}")
+                    else:
+                        logger.warning(f"No node mapping found for cell {action.cell_id}, using default node_id={action_node_id}. Available cells: {list(cell_to_node_map.keys())}")
+            
+            # Log the node_id being used
+            logger.info(f"Action {action.type} ({action.scope}) will use node_id={action_node_id}")
+            
             if action.type == "MCS_CAP":
                 # Map MCS_CAP to set-mcs
+                # set-mcs requires node (gNB node with MmWaveEnbNetDevice)
+                if action_node_id == 0:
+                    logger.warning(f"MCS_CAP requires a valid node_id (gNB node), but got 0. Skipping command.")
+                    continue
+                
                 mcs_value = action.params.get("dl_mcs_max", 18)
                 cmd = {
                     "type": "control",
                     "meid": meid,
                     "cmd": {
                         "cmd": "set-mcs",
-                        "node": node_id,
+                        "node": int(action_node_id),  # Required: gNB node
                         "mcs": int(mcs_value)
                     }
                 }
+                # Add UE ID if this is a UE-scoped action
+                if action.scope == "UE" and action.ue_id:
+                    cmd["cmd"]["ue_id"] = action.ue_id
+                    logger.info(f"MCS_CAP command for UE {action.ue_id} on gNB node {action_node_id}")
+                else:
+                    logger.info(f"MCS_CAP command for gNB node {action_node_id}, mcs={mcs_value}")
                 
             elif action.type == "PRB_WEIGHT":
                 # Map PRB_WEIGHT to set-bandwidth (approximate)
-                # PRB weight affects allocation, bandwidth is closest equivalent
+                # set-bandwidth: node is optional (if 0 or not provided, searches all nodes)
                 weight = action.params.get("weight", 1.0)
                 # Convert weight to bandwidth (rough approximation: 1.0 = 100 RBs)
                 bandwidth = int(100 * weight)
@@ -180,10 +309,49 @@ class PlaybookToCommandConverter:
                     "meid": meid,
                     "cmd": {
                         "cmd": "set-bandwidth",
-                        "node": node_id,
                         "bandwidth": bandwidth
                     }
                 }
+                # Only include node if we have a valid mapping (not 0)
+                # If node is 0 or not found, omit it to search all nodes
+                if action_node_id != 0:
+                    cmd["cmd"]["node"] = int(action_node_id)
+                    logger.info(f"PRB_WEIGHT command for gNB node {action_node_id}, bandwidth={bandwidth}")
+                else:
+                    logger.info(f"PRB_WEIGHT command for all nodes (node not specified), bandwidth={bandwidth}")
+                
+                # Add UE ID if this is a UE-scoped action
+                if action.scope == "UE" and action.ue_id:
+                    cmd["cmd"]["ue_id"] = action.ue_id
+                    logger.info(f"  → Targeting UE {action.ue_id}")
+                
+            elif action.type in ("TX_POWER", "POWER_CONTROL"):
+                # Map TX_POWER/POWER_CONTROL to set-enb-txpower
+                # set-enb-txpower requires node (gNB node with MmWaveEnbNetDevice)
+                if action_node_id == 0:
+                    logger.warning(f"TX_POWER requires a valid node_id (gNB node), but got 0. Skipping command.")
+                    continue
+                
+                # AI must provide txPowerDbm value - no default, let AI decide
+                tx_power_dbm = action.params.get("txPowerDbm") or action.params.get("tx_power_dbm")
+                if tx_power_dbm is None:
+                    logger.warning(f"{action.type} action missing txPowerDbm parameter, skipping: {action.params}")
+                    continue
+                cmd = {
+                    "type": "control",
+                    "meid": meid,
+                    "cmd": {
+                        "cmd": "set-enb-txpower",
+                        "node": int(action_node_id),  # Required: gNB node
+                        "txPowerDbm": float(tx_power_dbm)
+                    }
+                }
+                # Add UE ID if this is a UE-scoped action
+                if action.scope == "UE" and action.ue_id:
+                    cmd["cmd"]["ue_id"] = action.ue_id
+                    logger.info(f"TX_POWER command for UE {action.ue_id} on gNB node {action_node_id}, txPower={tx_power_dbm}dBm")
+                else:
+                    logger.info(f"TX_POWER command for gNB node {action_node_id}, txPower={tx_power_dbm}dBm")
                 
             elif action.type == "SCHEDULER_POLICY":
                 # Not directly supported, log warning
@@ -208,13 +376,140 @@ class PlaybookToCommandConverter:
 class XAppTCPServer:
     """TCP server for xApp communication."""
     
-    def __init__(self, host: str = "0.0.0.0", port: int = 5000):
+    def __init__(self, host: str = "0.0.0.0", port: int = 5000, kpi_csv_file: Optional[str] = None, commands_enabled: bool = True):
         self.host = host
         self.port = port
         self.server: Optional[asyncio.Server] = None
         self.clients: Dict[str, asyncio.StreamWriter] = {}
         self.kpi_queue: asyncio.Queue = asyncio.Queue()
         self.meid_map: Dict[str, str] = {}  # Map client_id to meid
+        self.commands_enabled = commands_enabled
+        # UE and node tracking
+        self.cell_to_node_map: Dict[str, int] = {}  # cell_id -> node_id
+        self.ue_to_node_map: Dict[str, int] = {}  # ue_id -> node_id
+        self.ue_to_cell_map: Dict[str, str] = {}  # ue_id -> cell_id
+        self.active_ues: Dict[str, Dict[str, Any]] = {}  # ue_id -> latest UE metrics
+        self.client_node_map: Dict[str, int] = {}  # client_id -> default node_id
+        # CSV logging - default to project root directory
+        if kpi_csv_file is None:
+            # Find project root (go up from src/demo/ain/RL_demo to project root)
+            project_root = THIS_DIR.parent.parent.parent.parent
+            self.kpi_csv_file = project_root / "kpms.csv"
+        else:
+            self.kpi_csv_file = Path(kpi_csv_file)
+        self.kpi_csv_initialized = False
+        self._init_kpi_csv()
+    
+    def _init_kpi_csv(self):
+        """Initialize KPI CSV file with base headers if it doesn't exist."""
+        if not self.kpi_csv_file.exists():
+            with open(self.kpi_csv_file, 'w', newline='') as f:
+                writer = csv.writer(f)
+                # Only write base columns - measurement columns will be added dynamically
+                writer.writerow(['timestamp', 'meid', 'cell_id', 'node_id', 'format'])
+            self.kpi_csv_initialized = True
+            logger.info(f"Initialized KPI CSV file: {self.kpi_csv_file}")
+        else:
+            self.kpi_csv_initialized = True
+    
+    def _write_kpi_to_csv(self, kpi_data: Dict[str, Any], meid: str, cell_id: str, node_id: Optional[int] = None, is_ue_data: bool = False):
+        """Write KPI data to CSV file with dynamic column handling.
+        
+        Args:
+            kpi_data: KPI data dictionary
+            meid: Management entity ID
+            cell_id: Cell ID (or UE ID if is_ue_data=True)
+            node_id: Node ID
+            is_ue_data: If True, prefix metrics with "UE_" to distinguish from cell-level
+        """
+        if not self.kpi_csv_initialized:
+            self._init_kpi_csv()
+        
+        try:
+            timestamp = datetime.now(timezone.utc).isoformat()
+            measurements = kpi_data.get("measurements", [])
+            
+            # Extract ALL metrics from measurements array (dynamic, like relay server)
+            metrics = {}
+            for m in measurements:
+                name = m.get("name", "")
+                if not name:
+                    # Try ID if name not available
+                    meas_id = m.get("id")
+                    if meas_id is not None:
+                        name = f"id_{meas_id}"
+                    else:
+                        continue
+                
+                value = m.get("value", "")
+                # Normalize name (replace dots/spaces with underscores, like relay server)
+                csv_name = name.replace(".", "_").replace(" ", "_")
+                # Prefix with UE_ if this is UE data
+                if is_ue_data and not csv_name.startswith("UE_"):
+                    csv_name = f"UE_{csv_name}"
+                metrics[csv_name] = value
+            
+            # Note: UE measurements are now written separately (see caller)
+            # This function only handles cell-level data when is_ue_data=False
+            
+            # Check if we need to add new columns to CSV
+            # Read existing file to get current fieldnames
+            existing_fieldnames = []
+            if self.kpi_csv_file.exists():
+                with open(self.kpi_csv_file, 'r') as f:
+                    reader = csv.DictReader(f)
+                    existing_fieldnames = list(reader.fieldnames) if reader.fieldnames else []
+            
+            # Base fieldnames (always present)
+            base_fieldnames = ['timestamp', 'meid', 'cell_id', 'node_id', 'format']
+            
+            # Get all metric names (from existing file + new metrics)
+            all_metric_names = set()
+            if existing_fieldnames:
+                # Get metric columns (everything except base columns)
+                all_metric_names = set(existing_fieldnames) - set(base_fieldnames)
+            
+            # Add new metric names
+            all_metric_names.update(metrics.keys())
+            
+            # Sort metric names for consistent column order
+            sorted_metric_names = sorted(all_metric_names)
+            fieldnames = base_fieldnames + sorted_metric_names
+            
+            # If we have new columns, rewrite the file with new header
+            if set(fieldnames) != set(existing_fieldnames or base_fieldnames):
+                # Read all existing rows
+                existing_rows = []
+                if self.kpi_csv_file.exists() and existing_fieldnames:
+                    with open(self.kpi_csv_file, 'r') as f:
+                        reader = csv.DictReader(f)
+                        existing_rows = list(reader)
+                
+                # Rewrite file with new header
+                with open(self.kpi_csv_file, 'w', newline='') as f:
+                    writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+                    writer.writeheader()
+                    for row in existing_rows:
+                        writer.writerow(row)
+            
+            # Write new row
+            row = {
+                'timestamp': timestamp,
+                'meid': meid,
+                'cell_id': cell_id,
+                'node_id': node_id if node_id is not None else '',
+                'format': kpi_data.get("format", "F1"),
+            }
+            
+            # Add all metrics
+            row.update(metrics)
+            
+            with open(self.kpi_csv_file, 'a', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+                writer.writerow(row)
+                
+        except Exception as e:
+            logger.error(f"Error writing KPI to CSV: {e}", exc_info=True)
         
     async def start(self):
         """Start the TCP server."""
@@ -274,12 +569,139 @@ class XAppTCPServer:
                     message = json.loads(text)
                     
                     msg_type = message.get("type", "unknown")
-                    logger.info(f"Received {msg_type} message from {client_id}")
+                    #logger.info(f"Received {msg_type} message from {client_id}")
                     
                     if msg_type == "kpi":
                         # Store meid for this client
                         meid = message.get("meid", "unknown")
                         self.meid_map[client_id] = meid
+                        
+                        # Extract and track UE/node information
+                        kpi_data = message.get("kpi", {})
+                        
+                        # Debug: Log raw KPI structure (first few messages only to avoid spam)
+                        if not hasattr(self, '_kpi_debug_logged'):
+                            self._kpi_debug_logged = set()
+                        if client_id not in self._kpi_debug_logged:
+                            logger.info(f"[DEBUG] Raw KPI message structure from {client_id}:")
+                            logger.info(f"  Full message keys: {list(message.keys())}")
+                            logger.info(f"  KPI data keys: {list(kpi_data.keys())}")
+                            logger.info(f"  KPI data sample (first 500 chars): {str(kpi_data)[:500]}")
+                            if "measurements" in kpi_data:
+                                logger.info(f"  Measurements array length: {len(kpi_data.get('measurements', []))}")
+                                if kpi_data.get("measurements"):
+                                    logger.info(f"  First measurement: {kpi_data['measurements'][0]}")
+                            self._kpi_debug_logged.add(client_id)
+                        cell_id_raw = kpi_data.get("cellObjectID") or kpi_data.get("cell_id") or "unknown"
+                        
+                        # Normalize cell_id: convert numeric strings to CELL_XXX format
+                        # e.g., "1111" -> "CELL_1111", "0000" -> "CELL_0000"
+                        if cell_id_raw != "unknown" and cell_id_raw and str(cell_id_raw).isdigit():
+                            cell_id = f"CELL_{cell_id_raw}"
+                        elif cell_id_raw and cell_id_raw.startswith("CELL_"):
+                            cell_id = cell_id_raw
+                        elif cell_id_raw != "unknown":
+                            cell_id = f"CELL_{cell_id_raw}"  # Prefix if not already prefixed
+                        else:
+                            cell_id = "unknown"
+                        
+                        # Extract node_id if available
+                        node_id = kpi_data.get("node_id") or kpi_data.get("nodeId") or message.get("node_id")
+                        if node_id is not None:
+                            node_id = int(node_id)
+                            self.client_node_map[client_id] = node_id
+                            if cell_id != "unknown":
+                                self.cell_to_node_map[cell_id] = node_id
+                            logger.info(f"Extracted node_id={node_id} for cell_id={cell_id}, client={client_id}")
+                        else:
+                            # Try to infer node_id from cell_id pattern or use default
+                            # If cell_id is numeric (like "1111"), try to infer node_id
+                            # Common pattern: cell_id "1111" might map to node 1, "0000" to node 0
+                            inferred_node_id = None
+                            if cell_id != "unknown":
+                                # Try existing mapping first
+                                if cell_id in self.cell_to_node_map:
+                                    inferred_node_id = self.cell_to_node_map[cell_id]
+                                    self.client_node_map[client_id] = inferred_node_id
+                                    logger.info(f"Using existing node_id={inferred_node_id} for cell_id={cell_id} from mapping")
+                                # Try to infer from cell_id pattern (heuristic: extract first digit from numeric part)
+                                # Handle both "1111" and "CELL_1111" formats
+                                numeric_part = None
+                                if cell_id_raw and str(cell_id_raw).isdigit():
+                                    numeric_part = str(cell_id_raw)
+                                elif cell_id and cell_id.startswith("CELL_"):
+                                    # Extract numeric part from "CELL_1111" -> "1111"
+                                    numeric_part = cell_id.replace("CELL_", "")
+                                    if not numeric_part.isdigit():
+                                        numeric_part = None
+                                
+                                if numeric_part and numeric_part.isdigit():
+                                    # Extract first digit: "1111" -> 1, "0000" -> 0, "2222" -> 2
+                                    first_digit = int(numeric_part[0])
+                                    inferred_node_id = first_digit
+                                    self.cell_to_node_map[cell_id] = inferred_node_id
+                                    self.client_node_map[client_id] = inferred_node_id
+                                    logger.info(f"Inferred node_id={inferred_node_id} for cell_id={cell_id} (extracted from first digit of numeric part '{numeric_part}')")
+                                else:
+                                    logger.warning(f"No node_id found in KPI for cell_id={cell_id}, client={client_id}. Available mappings: {list(self.cell_to_node_map.keys())}")
+                            else:
+                                logger.warning(f"No node_id found in KPI for cell_id={cell_id}, client={client_id}. Available mappings: {list(self.cell_to_node_map.keys())}")
+                        
+                        # Extract and track UE information
+                        ues = kpi_data.get("ues", [])
+                        for ue in ues:
+                            ue_id = ue.get("ue_id") or ue.get("ueId") or ue.get("id")
+                            if ue_id:
+                                ue_id = str(ue_id)
+                                # Map UE to cell
+                                ue_cell_id = ue.get("cell_id") or ue.get("cellId") or cell_id
+                                if ue_cell_id != "unknown":
+                                    self.ue_to_cell_map[ue_id] = ue_cell_id
+                                
+                                # Extract UE node_id from UE object (xApp sends node_id=3 for UEs)
+                                ue_node_id = ue.get("node_id") or ue.get("nodeId")
+                                if ue_node_id is not None:
+                                    ue_node_id = int(ue_node_id)
+                                    self.ue_to_node_map[ue_id] = ue_node_id
+                                    logger.info(f"Extracted UE node_id={ue_node_id} for UE {ue_id}")
+                                # Map UE to node (via cell or direct) - fallback if UE object doesn't have node_id
+                                elif node_id is not None:
+                                    self.ue_to_node_map[ue_id] = node_id
+                                elif ue_cell_id in self.cell_to_node_map:
+                                    self.ue_to_node_map[ue_id] = self.cell_to_node_map[ue_cell_id]
+                                
+                                # Store latest UE metrics
+                                self.active_ues[ue_id] = {
+                                    "ue_id": ue_id,
+                                    "cell_id": ue_cell_id,
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "metrics": ue
+                                }
+                        
+                        # Write KPI to CSV file
+                        # Write cell-level data first
+                        inferred_node_id = self.client_node_map.get(client_id) if client_id in self.client_node_map else node_id
+                        self._write_kpi_to_csv(kpi_data, meid, cell_id, inferred_node_id)
+                        
+                        # Write separate rows for each UE with their node_id
+                        for ue in ues:
+                            ue_id = ue.get("ue_id") or ue.get("ueId") or ue.get("id")
+                            if ue_id:
+                                ue_node_id = ue.get("node_id") or ue.get("nodeId")
+                                if ue_node_id is None:
+                                    # Fallback to mapping
+                                    ue_node_id = self.ue_to_node_map.get(str(ue_id))
+                                if ue_node_id is not None:
+                                    # Create a UE-only KPI data structure for CSV writing
+                                    ue_kpi_data = {
+                                        "format": kpi_data.get("format", "F1"),
+                                        "measurements": ue.get("measurements", []),
+                                        "ues": []  # Don't include nested UEs
+                                    }
+                                    ue_cell_id = ue.get("cell_id") or ue.get("cellId") or cell_id
+                                    # Write UE row with UE node_id (is_ue_data=True to prefix metrics with UE_)
+                                    self._write_kpi_to_csv(ue_kpi_data, meid, f"UE_{ue_id}", int(ue_node_id), is_ue_data=True)
+                        
                         # Queue KPI for processing
                         await self.kpi_queue.put((client_id, message))
                     else:
@@ -303,6 +725,10 @@ class XAppTCPServer:
             
     async def send_command(self, client_id: str, command: Dict[str, Any]) -> bool:
         """Send a control command to a client."""
+        if not self.commands_enabled:
+            logger.info(f"[COMMANDS DISABLED] Would send command to {client_id}: {command.get('cmd', {}).get('cmd', 'unknown')}")
+            return True  # Return True to indicate "success" (command was processed, just not sent)
+        
         if client_id not in self.clients:
             logger.warning(f"Client {client_id} not connected")
             return False
@@ -314,11 +740,29 @@ class XAppTCPServer:
             length_header = struct.pack("!I", len(response_bytes))
             
             writer.write(length_header + response_bytes)
-            await writer.drain()
+            # Add timeout to prevent hanging
+            await asyncio.wait_for(writer.drain(), timeout=2.0)
             logger.info(f"Sent command to {client_id}: {command.get('cmd', {}).get('cmd', 'unknown')}")
             return True
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout sending command to {client_id} - connection may be broken")
+            # Remove broken client
+            if client_id in self.clients:
+                try:
+                    self.clients[client_id].close()
+                except:
+                    pass
+                del self.clients[client_id]
+            return False
         except Exception as e:
             logger.error(f"Failed to send command to {client_id}: {e}")
+            # Remove broken client
+            if client_id in self.clients:
+                try:
+                    self.clients[client_id].close()
+                except:
+                    pass
+                del self.clients[client_id]
             return False
 
 
@@ -331,6 +775,7 @@ class XAppActor(Actor):
         self.meid = meid
         self.node_id = node_id
         self.converter = PlaybookToCommandConverter()
+        self.commands_enabled = getattr(tcp_server, 'commands_enabled', True)
         
     async def apply_async(self, playbook: Playbook, client_id: Optional[str] = None):
         """Apply playbook by sending commands to xApp (async version)."""
@@ -339,27 +784,71 @@ class XAppActor(Actor):
         self.save_payload(payload)
         logger.info(f"Saved playbook: {payload['playbook_id']}")
         
+        # Get mappings from TCP server if available
+        cell_to_node_map = {}
+        ue_to_node_map = {}
+        ue_to_cell_map = {}
+        default_node_id = self.node_id
+        
+        if self.tcp_server:
+            cell_to_node_map = getattr(self.tcp_server, 'cell_to_node_map', {})
+            ue_to_node_map = getattr(self.tcp_server, 'ue_to_node_map', {})
+            ue_to_cell_map = getattr(self.tcp_server, 'ue_to_cell_map', {})
+            if client_id and hasattr(self.tcp_server, 'client_node_map'):
+                default_node_id = self.tcp_server.client_node_map.get(client_id, self.node_id)
+            
+            # Log available mappings for debugging
+            logger.info(f"Available mappings - cells: {list(cell_to_node_map.keys())}, UEs: {list(ue_to_node_map.keys())[:5]}..., default_node_id: {default_node_id}")
+        
         # Convert to commands and send to xApp
-        commands = self.converter.playbook_to_commands(playbook, self.meid, self.node_id)
+        commands = self.converter.playbook_to_commands(
+            playbook, 
+            self.meid, 
+            default_node_id,
+            cell_to_node_map=cell_to_node_map,
+            ue_to_node_map=ue_to_node_map,
+            ue_to_cell_map=ue_to_cell_map
+        )
         
         logger.info(f"Converted playbook to {len(commands)} command(s)")
         for i, cmd in enumerate(commands):
             logger.info(f"  Command {i+1}: {cmd.get('cmd', {}).get('cmd', 'unknown')}")
         
+        if not self.commands_enabled:
+            logger.info(f"[COMMANDS DISABLED] Would send {len(commands)} command(s) but commands are disabled")
+            return
+        
         if commands:
             # If client_id provided, send to that client, otherwise broadcast
             if client_id:
-                for cmd in commands:
-                    success = await self.tcp_server.send_command(client_id, cmd)
-                    if not success:
-                        logger.error(f"Failed to send command to {client_id}")
+                if client_id not in self.tcp_server.clients:
+                    logger.warning(f"Client {client_id} not connected, cannot send commands")
+                else:
+                    for i, cmd in enumerate(commands):
+                        logger.info(f"Sending command {i+1}/{len(commands)}: {cmd.get('cmd', {}).get('cmd', 'unknown')} to node {cmd.get('cmd', {}).get('node', 'unknown')}")
+                        success = await self.tcp_server.send_command(client_id, cmd)
+                        if not success:
+                            logger.error(f"Failed to send command to {client_id}")
+                        # Add 2 second cooldown between commands (except for the last one)
+                        if i < len(commands) - 1:
+                            logger.info(f"Waiting 2 seconds before next command...")
+                            await asyncio.sleep(2.0)
             else:
                 # Send to all connected clients
-                for cid in list(self.tcp_server.clients.keys()):
-                    for cmd in commands:
-                        success = await self.tcp_server.send_command(cid, cmd)
-                        if not success:
-                            logger.error(f"Failed to send command to {cid}")
+                connected_clients = list(self.tcp_server.clients.keys())
+                if not connected_clients:
+                    logger.warning("No clients connected, cannot send commands")
+                else:
+                    for cid in connected_clients:
+                        for i, cmd in enumerate(commands):
+                            logger.info(f"Sending command {i+1}/{len(commands)}: {cmd.get('cmd', {}).get('cmd', 'unknown')} to node {cmd.get('cmd', {}).get('node', 'unknown')}")
+                            success = await self.tcp_server.send_command(cid, cmd)
+                            if not success:
+                                logger.error(f"Failed to send command to {cid}")
+                            # Add 2 second cooldown between commands (except for the last one)
+                            if i < len(commands) - 1:
+                                logger.info(f"Waiting 2 seconds before next command...")
+                                await asyncio.sleep(2.0)
         else:
             logger.warning("No commands generated from playbook - playbook may contain unsupported actions")
 
@@ -372,6 +861,7 @@ async def run_ai_loop(
     target_value: float = 40.0,
     steps: int = 1000,
     offline_model: Optional[str] = None,
+    default_node_id: Optional[int] = None,
 ):
     """Run the AI contextual bandit loop."""
     # Initialize components
@@ -412,7 +902,9 @@ async def run_ai_loop(
             logger.warning(f"Could not load pre-trained model ({e}). Starting from scratch.")
     
     # Create actor with TCP server
-    actor = XAppActor("configs", tcp_server, meid="gnb:131-133-31000000", node_id=0)
+    # Use provided default_node_id, or 0 as fallback (will be overridden by actual mappings from KPIs)
+    actor_node_id = default_node_id if default_node_id is not None else 0
+    actor = XAppActor("configs", tcp_server, meid="gnb:131-133-31000000", node_id=actor_node_id)
     
     # KPI adapter
     kpi_adapter = XAppKPIAdapter()
@@ -440,7 +932,12 @@ async def run_ai_loop(
             current_meid = tcp_server.meid_map.get(client_id, current_meid)
             actor.meid = current_meid
             
-            logger.info(f"Processing KPI from {client_id}, meid={current_meid}")
+            # Update actor's node_id if available
+            if hasattr(tcp_server, 'client_node_map') and client_id in tcp_server.client_node_map:
+                actor.node_id = tcp_server.client_node_map[client_id]
+                logger.debug(f"Updated actor node_id to {actor.node_id} for client {client_id}")
+            
+            logger.info(f"Processing KPI from {client_id}, meid={current_meid}, active_ues={len(getattr(tcp_server, 'active_ues', {}))}")
             
             # Convert KPI format
             internal_kpi = kpi_adapter.convert_xapp_kpi_to_internal(xapp_message, current_meid)
@@ -488,6 +985,22 @@ async def run_ai_loop(
                 },
                 "evidence_ref": "telemetry://xapp/kpi",
             }
+            
+            # Print deviation details
+            direction_str = dev_raw["direction"]
+            is_deviating = (curr > target_value) if direction_str == "lower_better" else (curr < target_value)
+            deviation_pct = abs((curr - target_value) / target_value * 100) if target_value > 0 else 0
+            logger.info(f"═══════════════════════════════════════════════════════════")
+            logger.info(f"📊 DEVIATION DETECTED:")
+            logger.info(f"   Metric: {target_metric}")
+            logger.info(f"   Current Value: {curr:.2f}")
+            logger.info(f"   Target Value: {target_value:.2f}")
+            logger.info(f"   Direction: {direction_str}")
+            logger.info(f"   Deviation: {deviation_pct:.1f}% {'above' if curr > target_value else 'below'} target")
+            logger.info(f"   Status: {'⚠️  DEVIATING' if is_deviating else '✅ OK'}")
+            logger.info(f"   Cell ID: {dev_raw['scope']['cell_id']}")
+            logger.info(f"   Severity: {dev_raw['severity']}")
+            logger.info(f"═══════════════════════════════════════════════════════════")
             
             dev = normalize_deviation(dev_raw)
             try:
@@ -545,8 +1058,13 @@ async def run_ai_loop(
         
         # Apply playbook (sends commands to xApp)
         logger.info(f"[Step {step}] Applying playbook and sending commands to xApp...")
-        await actor.apply_async(best_pb, client_id=current_client_id)
-        logger.info(f"[Step {step}] Commands sent successfully")
+        logger.debug(f"Current client_id: {current_client_id}, connected clients: {list(tcp_server.clients.keys())}")
+        try:
+            await actor.apply_async(best_pb, client_id=current_client_id)
+            logger.info(f"[Step {step}] Commands sent successfully")
+        except Exception as e:
+            logger.error(f"[Step {step}] Error applying playbook: {e}", exc_info=True)
+            # Continue anyway to avoid getting stuck
         
         last_playbook = best_pb
         predictor.steps += 1
@@ -567,15 +1085,27 @@ async def main():
     parser.add_argument("--steps", type=int, default=1000, help="Max steps")
     parser.add_argument("--target-metric", type=str, default="delay_p95_ms", help="Target metric")
     parser.add_argument("--target-value", type=float, default=40.0, help="Target value")
-    parser.add_argument("--cells", type=str, nargs="+", default=["CELL_001"], help="Cell IDs")
+    parser.add_argument("--cells", type=str, nargs="+", default=["CELL_001"], help="Cell IDs (will auto-detect from KPIs if not found)")
     parser.add_argument("--slices", type=str, nargs="+", default=["SLICE_A"], help="Slice IDs")
+    parser.add_argument("--default-node-id", type=int, default=None, 
+                       help="Default node_id for gNB (if xApp doesn't send it). Typically 1 or 2 for gNB nodes. If not specified, will try to infer from KPIs.")
     parser.add_argument("--offline-model", type=str, default=None, 
                        help="Path to pre-trained model (e.g., models/qnet_offline.pt). If not provided, starts training from scratch.")
+    parser.add_argument("--commands-enabled", action="store_true", default=True,
+                       help="Enable sending control commands to xApp (default: enabled)")
+    parser.add_argument("--commands-disabled", action="store_false", dest="commands_enabled",
+                       help="Disable sending control commands to xApp (useful for KPI collection only)")
     
     args = parser.parse_args()
     
-    # Create TCP server
-    tcp_server = XAppTCPServer(host=args.host, port=args.port)
+    # Create TCP server (CSV file will be created automatically in project root)
+    tcp_server = XAppTCPServer(host=args.host, port=args.port, commands_enabled=args.commands_enabled)
+    
+    if not args.commands_enabled:
+        logger.info("=" * 60)
+        logger.info("COMMANDS DISABLED - AI will process KPIs but NOT send control commands")
+        logger.info("This is useful for collecting KPIs from simulation without interference")
+        logger.info("=" * 60)
     await tcp_server.start()
     
     try:
@@ -588,6 +1118,7 @@ async def main():
             target_value=args.target_value,
             steps=args.steps,
             offline_model=args.offline_model,
+            default_node_id=args.default_node_id,
         )
     except KeyboardInterrupt:
         logger.info("Interrupted by user")

@@ -68,15 +68,17 @@ class Actor:
             if "type" not in a or "scope" not in a:
                 raise ValueError(f"Action #{i} must include 'type' and 'scope'.")
             # Basic whitelist checks; extend as needed.
-            if a["type"] not in {"SCHEDULER_POLICY", "MCS_CAP", "PRB_WEIGHT", "SLICE_QOS", "REPORTING"}:
+            if a["type"] not in {"SCHEDULER_POLICY", "MCS_CAP", "PRB_WEIGHT", "SLICE_QOS", "TX_POWER", "POWER_CONTROL", "REPORTING"}:
                 raise ValueError(f"Unsupported action type: {a['type']}")
             if a["scope"] not in {"CELL", "UE", "SLICE"}:
                 raise ValueError(f"Unsupported action scope: {a['scope']}")
             # Scope-target consistency (soft check)
-            if a["scope"] == "CELL" and not a.get("cell_id"):
-                raise ValueError(f"Action #{i} has scope=CELL but no 'cell_id'.")
-            if a["scope"] == "SLICE" and not a.get("slice_id"):
-                raise ValueError(f"Action #{i} has scope=SLICE but no 'slice_id'.")
+            # REPORTING actions are no-ops and don't need cell_id/slice_id
+            if a["type"] != "REPORTING":
+                if a["scope"] == "CELL" and not a.get("cell_id"):
+                    raise ValueError(f"Action #{i} has scope=CELL but no 'cell_id'.")
+                if a["scope"] == "SLICE" and not a.get("slice_id"):
+                    raise ValueError(f"Action #{i} has scope=SLICE but no 'slice_id'.")
             # Params presence
             if "params" not in a or not isinstance(a["params"], dict):
                 raise ValueError(f"Action #{i} must include 'params' dict (can be empty {{}})." )

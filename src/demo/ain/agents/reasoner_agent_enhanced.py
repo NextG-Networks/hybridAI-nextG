@@ -53,6 +53,7 @@ class EnhancedReasonerAgent:
         while True:
             msg = await q_deviation.get()
             deviation = msg.payload
+            print(f"[Reasoner] Received deviation event: {deviation.get('metric')}={deviation.get('value')}, severity={deviation.get('severity')}")
             
             # Get SLO target for this metric if available
             metric = deviation.get("metric")

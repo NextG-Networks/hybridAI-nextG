@@ -29,8 +29,8 @@ def main():
     clf = RidgeClassifierCV(alphas=np.logspace(-3, 3, 13)).fit(Xtr, ytr)
     acc = clf.score(Xte, yte)
     print(f"MiniRocket training acc: {acc:.3f} (windows={len(Y)}, positives={Y.sum()})")
-    joblib.dump({"mr": mr, "clf": clf}, "src/models/minirocket.joblib")
-    print("Saved model → src/models/minirocket.joblib")
+    joblib.dump({"mr": mr, "clf": clf}, "models/minirocket.joblib")
+    print("Saved model → models/minirocket.joblib")
 
 
 if __name__ == "__main__":

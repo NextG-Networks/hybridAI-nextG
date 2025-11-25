@@ -46,6 +46,11 @@ class MinirocketAgent:
         self.deviation_buffer: deque = deque(maxlen=min_deviation_count)  # Track recent deviations
         self.last_reported_value: Optional[float] = None
         
+        # Feature accumulation: merge KPIs from fragments (similar to ObserverBridge)
+        self.accumulated_kpis: Dict[str, Dict[str, Any]] = {}  # cell_id -> accumulated KPI
+        self.accumulation_timestamps: Dict[str, float] = {}  # cell_id -> last update time
+        self.accumulation_timeout = 2.0  # seconds - process after this timeout even if metric missing
+        
         # Initialize MiniRocket if available
         self.minirocket: Optional[MiniRocketRT] = None
         if MINIROCKET_AVAILABLE:
@@ -68,14 +73,51 @@ class MinirocketAgent:
             if not kpi:
                 continue
             
-            # Extract metric value
+            # Accumulate features from fragments (similar to ObserverBridge)
             cell_metrics = kpi.get("CellMetrics", {})
-            value = cell_metrics.get(self.metric)
+            cell_id = cell_metrics.get("cell_id", "unknown")
+            current_time = datetime.now(timezone.utc).timestamp()
             
+            # Initialize or update accumulated KPI for this cell
+            if cell_id not in self.accumulated_kpis:
+                self.accumulated_kpis[cell_id] = {
+                    "CellMetrics": cell_metrics.copy()
+                }
+                self.accumulation_timestamps[cell_id] = current_time
+            else:
+                # Merge new features into accumulated KPI
+                acc_cell_metrics = self.accumulated_kpis[cell_id]["CellMetrics"]
+                for key, value in cell_metrics.items():
+                    if value is not None:
+                        acc_cell_metrics[key] = value
+            
+            # Check if we have the metric we need
+            acc_cell_metrics = self.accumulated_kpis[cell_id]["CellMetrics"]
+            value = acc_cell_metrics.get(self.metric)
+            time_since_start = current_time - self.accumulation_timestamps[cell_id]
+            
+            # Process if we have the metric, or if timeout expired
+            if value is None and time_since_start < self.accumulation_timeout:
+                # Still waiting for metric - continue accumulating
+                continue
+            
+            # Use accumulated KPI
             if value is None:
+                # Timeout expired but still no metric - skip this KPI
+                del self.accumulated_kpis[cell_id]
+                del self.accumulation_timestamps[cell_id]
                 continue
             
             value = float(value)
+            
+            # Get accumulated KPI before deleting
+            acc_kpi = {
+                "CellMetrics": self.accumulated_kpis[cell_id]["CellMetrics"].copy()
+            }
+            
+            # Clear accumulated KPI after processing
+            del self.accumulated_kpis[cell_id]
+            del self.accumulation_timestamps[cell_id]
             
             # Detect deviation
             is_deviation = False
@@ -85,13 +127,20 @@ class MinirocketAgent:
                 result = self.minirocket.push(value)
                 if result and result.get("pred") == 1:  # 1 = deviation detected
                     is_deviation = True
+                    print(f"[MinirocketAgent] ML model detected deviation: {self.metric}={value:.2f}")
+                elif result:
+                    print(f"[MinirocketAgent] ML model prediction: {self.metric}={value:.2f}, pred={result.get('pred')}")
             else:
                 # Fallback: simple threshold-based detection
                 # This is a placeholder - in real system, you'd have SLO targets
                 # For now, we'll use a simple heuristic
                 baseline = 40.0  # Default baseline
-                if value > baseline * 1.2:  # 20% above baseline
+                threshold = baseline * 1.2  # 20% above baseline
+                if value > threshold:
                     is_deviation = True
+                    print(f"[MinirocketAgent] Threshold detected deviation: {self.metric}={value:.2f} > {threshold:.2f}")
+                else:
+                    print(f"[MinirocketAgent] No deviation (threshold): {self.metric}={value:.2f} <= {threshold:.2f}")
             
             # Debouncing logic: only report if:
             # 1. We have enough consecutive deviations (min_deviation_count)
@@ -129,7 +178,7 @@ class MinirocketAgent:
                                     should_report = change_pct >= 0.01  # 1% change
             
             if should_report:
-                deviation = self._create_deviation_event(kpi, value, confidence=0.9)
+                deviation = self._create_deviation_event(acc_kpi, value, confidence=0.9)
                 # Publish deviation event
                 await self.bus.pub("deviation.detected", make_msg(
                     "deviation.detected", "DEVIATION", "deviation.v1", deviation
@@ -137,6 +186,17 @@ class MinirocketAgent:
                 print(f"[MinirocketAgent] Deviation detected: {self.metric}={value:.2f} (debounced)")
                 self.last_deviation_time = now
                 self.last_reported_value = value
+            else:
+                # Log why we're not reporting (for debugging)
+                if is_deviation:
+                    if len(self.deviation_buffer) < self.min_deviation_count:
+                        print(f"[MinirocketAgent] Deviation detected but buffer not full: {len(self.deviation_buffer)}/{self.min_deviation_count}")
+                    elif self.last_deviation_time and (now - self.last_deviation_time).total_seconds() < self.debounce_seconds:
+                        print(f"[MinirocketAgent] Deviation detected but in cooldown: {(now - self.last_deviation_time).total_seconds():.1f}s < {self.debounce_seconds}s")
+                    elif self.last_reported_value and abs(value - self.last_reported_value) < 0.1:
+                        print(f"[MinirocketAgent] Deviation detected but value change too small: {abs(value - self.last_reported_value):.3f}")
+                else:
+                    print(f"[MinirocketAgent] No deviation: {self.metric}={value:.2f} (baseline check)")
     
     def _create_deviation_event(self, kpi: Dict[str, Any], value: float, 
                                 confidence: float = 0.8) -> Dict[str, Any]:

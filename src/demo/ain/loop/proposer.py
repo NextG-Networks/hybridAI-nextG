@@ -22,7 +22,7 @@ PLAYBOOK_K = 3         # actions per playbook
 CANDIDATE_N = 5        # number of candidate playbooks per decision
 COOLDOWN_STEPS = 3     # cooldown per (type, scope, entity)
 
-ActionType = str   # {"SCHEDULER_POLICY","MCS_CAP","PRB_WEIGHT","SLICE_QOS","REPORTING"}
+ActionType = str   # {"SCHEDULER_POLICY","MCS_CAP","PRB_WEIGHT","SLICE_QOS","TX_POWER","POWER_CONTROL","REPORTING"}
 ScopeType = str    # {"CELL","UE","SLICE"}
 
 # Small demo grids this would later be sent by the actual network as a "what can we change now" message
@@ -30,6 +30,7 @@ SCHEDULER_POLICIES = ["PF", "RR", "MAX_THROUGHPUT"]
 MCS_DL_MAX_GRID = [14, 18, 22]
 PRB_WEIGHT_GRID = [0.8, 1.0, 1.2]
 SLICE_WEIGHT_GRID = [0.8, 1.0, 1.2]
+TX_POWER_DBM_GRID = [40.0, 43.0, 46.0, 49.0, 52.0]  # Transmission power in dBm
 
 @dataclass
 class ActionSpace:
@@ -43,6 +44,8 @@ class ActionSpace:
                 acts.append(ControlAction("SCHEDULER_POLICY", "CELL", cell_id=c, params={"policy": pol}))
             for m in MCS_DL_MAX_GRID:
                 acts.append(ControlAction("MCS_CAP", "CELL", cell_id=c, params={"dl_mcs_max": m}))
+            for tx_power in TX_POWER_DBM_GRID:
+                acts.append(ControlAction("TX_POWER", "CELL", cell_id=c, params={"txPowerDbm": tx_power}))
         for s in self.slices:
             for w in PRB_WEIGHT_GRID:
                 acts.append(ControlAction("PRB_WEIGHT", "SLICE", slice_id=s, params={"weight": w}))
@@ -183,6 +186,11 @@ class ContextualActionWeights:
                 ("PRB_WEIGHT", 1.2): 1.8,
                 ("PRB_WEIGHT", 1.0): 1.0,
                 ("PRB_WEIGHT", 0.8): 0.7,
+                ("TX_POWER", 52.0): 2.0,
+                ("TX_POWER", 49.0): 1.8,
+                ("TX_POWER", 46.0): 1.2,
+                ("TX_POWER", 43.0): 0.9,
+                ("TX_POWER", 40.0): 0.7,
             },
             "low_throughput": {
                 ("SCHEDULER_POLICY", "PF"): 2.5,
@@ -194,6 +202,11 @@ class ContextualActionWeights:
                 ("PRB_WEIGHT", 1.2): 3.0,
                 ("PRB_WEIGHT", 1.0): 1.5,
                 ("PRB_WEIGHT", 0.8): 0.5,
+                ("TX_POWER", 52.0): 2.2,
+                ("TX_POWER", 49.0): 2.0,
+                ("TX_POWER", 46.0): 1.3,
+                ("TX_POWER", 43.0): 0.9,
+                ("TX_POWER", 40.0): 0.7,
             },
             "high_error_rate": {
                 ("SCHEDULER_POLICY", "PF"): 2.0,
@@ -205,6 +218,11 @@ class ContextualActionWeights:
                 ("PRB_WEIGHT", 1.2): 1.8,
                 ("PRB_WEIGHT", 1.0): 1.2,
                 ("PRB_WEIGHT", 0.8): 0.8,
+                ("TX_POWER", 52.0): 1.8,
+                ("TX_POWER", 49.0): 1.6,
+                ("TX_POWER", 46.0): 1.2,
+                ("TX_POWER", 43.0): 1.0,
+                ("TX_POWER", 40.0): 0.9,
             },
             "high_load": {
                 ("SCHEDULER_POLICY", "PF"): 2.5,
@@ -216,6 +234,11 @@ class ContextualActionWeights:
                 ("MCS_CAP", 18): 1.5,
                 ("MCS_CAP", 22): 1.2,
                 ("MCS_CAP", 14): 1.0,
+                ("TX_POWER", 40.0): 1.5,
+                ("TX_POWER", 43.0): 1.3,
+                ("TX_POWER", 46.0): 1.0,
+                ("TX_POWER", 49.0): 0.8,
+                ("TX_POWER", 52.0): 0.6,
             },
             "poor_quality": {
                 ("SCHEDULER_POLICY", "PF"): 2.2,
@@ -227,6 +250,11 @@ class ContextualActionWeights:
                 ("PRB_WEIGHT", 1.0): 1.5,
                 ("PRB_WEIGHT", 1.2): 1.2,
                 ("PRB_WEIGHT", 0.8): 1.0,
+                ("TX_POWER", 52.0): 2.5,
+                ("TX_POWER", 49.0): 2.2,
+                ("TX_POWER", 46.0): 1.5,
+                ("TX_POWER", 43.0): 1.0,
+                ("TX_POWER", 40.0): 0.8,
             },
             "normal": {
                 # Balanced weights for normal conditions
@@ -239,6 +267,11 @@ class ContextualActionWeights:
                 ("PRB_WEIGHT", 1.0): 1.5,
                 ("PRB_WEIGHT", 1.2): 1.2,
                 ("PRB_WEIGHT", 0.8): 1.0,
+                ("TX_POWER", 46.0): 1.5,
+                ("TX_POWER", 49.0): 1.3,
+                ("TX_POWER", 43.0): 1.2,
+                ("TX_POWER", 52.0): 1.1,
+                ("TX_POWER", 40.0): 1.0,
             }
         }
 
@@ -259,6 +292,11 @@ class ContextualActionWeights:
         elif action.type == "SLICE_QOS":
             weight = action.params.get("weight", 1.0)
             key = ("SLICE_QOS", weight)
+        elif action.type in ("TX_POWER", "POWER_CONTROL"):
+            tx_power = action.params.get("txPowerDbm") or action.params.get("tx_power_dbm")
+            if tx_power is None:
+                return 1.0  # Default weight if missing
+            key = ("TX_POWER", float(tx_power))
         else:
             return 1.0  # Default weight for unknown actions
         

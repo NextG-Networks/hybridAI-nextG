@@ -73,6 +73,7 @@ class ProposerAgent:
                     "proposer.candidates", "PLAYBOOKS", "playbooks.v1",
                     {"candidates": playbooks}
                 ))
+                print(f"[Proposer] Published {len(playbooks)} candidate playbooks to proposer.candidates")
                 
                 # Clear pending state after using it
                 pending_state = None
