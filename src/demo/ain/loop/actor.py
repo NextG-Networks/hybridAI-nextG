@@ -9,9 +9,9 @@ from ain.common.types import ControlAction, Playbook
 # ---- Actor ----
 
 class Actor:
-    """Converts Playbook objects to structured JSON and saves them as config files."""
+    """Converts Playbook objects to structured JSON and saves them as playbook files."""
 
-    def __init__(self, out_dir: Union[str, Path] = "configs"):
+    def __init__(self, out_dir: Union[str, Path] = "playbooks"):
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
 

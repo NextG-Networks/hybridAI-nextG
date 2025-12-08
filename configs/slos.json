@@ -1,0 +1,12 @@
+{
+  "slos": [
+    {
+      "metric": "DRB_PdcpSduDelayDl",
+      "target": 10.0,
+      "direction": "lower_better",
+      "tolerance": 0.1,
+      "priority": "high",
+      "slo_id": "slo_latency_gnb"
+    }
+  ]
+}

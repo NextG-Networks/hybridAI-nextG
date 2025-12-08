@@ -201,7 +201,7 @@ def main():
     ap.add_argument("--success-streak", type=int, default=4, help="Consecutive hits to consider intent achieved")
     ap.add_argument("--save-every", type=int, default=10, help="Save actor JSON every N steps")
     ap.add_argument("--no-spawn-kpi", action="store_true", help="Do not spawn the fake KPI generator")
-    ap.add_argument("--out-dir", type=str, default="configs", help="Where to save playbook JSONs")
+    ap.add_argument("--out-dir", type=str, default="playbooks", help="Where to save playbook JSONs")
     ap.add_argument("--reasoner", choices=["llm","fallback"], default="llm", help="Use LLM or deterministic fallback")
     ap.add_argument("--ext-metric", type=str, default=None, help="External SLO metric (e.g., thr_dl_bps)")
     ap.add_argument("--ext-target", type=float, default=None, help="External SLO target value")

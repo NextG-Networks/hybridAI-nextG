@@ -63,6 +63,23 @@ class SlateDQNetwork(nn.Module):
             nn.Linear(fusion_hidden, 1),
         )
         self.input_dim_action_onehot = self.action_enc.input_dim
+        
+        # Initialize weights with smaller values to prevent NaN in untrained model
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """Initialize network weights with smaller values to prevent NaN."""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight, gain=0.1)  # Smaller gain
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0.0)
+            elif isinstance(module, nn.GRU):
+                for name, param in module.named_parameters():
+                    if 'weight' in name:
+                        nn.init.xavier_uniform_(param, gain=0.1)
+                    elif 'bias' in name:
+                        nn.init.constant_(param, 0.0)
 
 
     def forward(self, state_seq: torch.Tensor, playbook_onehots: torch.Tensor) -> torch.Tensor:

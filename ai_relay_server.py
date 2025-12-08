@@ -48,6 +48,19 @@ ue_csv_writer = None
 gnb_fieldnames = None
 ue_fieldnames = None
 
+# Locks for thread-safe CSV operations
+gnb_csv_lock = threading.Lock()
+ue_csv_lock = threading.Lock()
+
+# Flags to track if rewrite is in progress
+gnb_rewrite_pending = False
+ue_rewrite_pending = False
+
+# Counters for periodic flushing (flush every N writes)
+gnb_write_count = 0
+ue_write_count = 0
+FLUSH_INTERVAL = 10  # Flush every 10 writes
+
 def get_measurement_label(name):
     """Convert measurement name to human-readable label"""
     # Simple sanitization - can be enhanced with full mapping from ai_dummy_server if needed
@@ -62,7 +75,7 @@ def init_csv_files():
     if file_exists:
         with open(CSV_GNB_FILE, 'r') as f:
             reader = csv.DictReader(f)
-            gnb_fieldnames = reader.fieldnames or ['timestamp', 'meid', 'cell_id', 'format']
+            gnb_fieldnames = list(reader.fieldnames) if reader.fieldnames else ['timestamp', 'meid', 'cell_id', 'format']
     else:
         gnb_fieldnames = ['timestamp', 'meid', 'cell_id', 'format']
     
@@ -76,7 +89,7 @@ def init_csv_files():
     if file_exists:
         with open(CSV_UE_FILE, 'r') as f:
             reader = csv.DictReader(f)
-            ue_fieldnames = reader.fieldnames or ['timestamp', 'meid', 'cell_id', 'ue_id']
+            ue_fieldnames = list(reader.fieldnames) if reader.fieldnames else ['timestamp', 'meid', 'cell_id', 'ue_id']
     else:
         ue_fieldnames = ['timestamp', 'meid', 'cell_id', 'ue_id']
     
@@ -89,91 +102,169 @@ def init_csv_files():
 
 def close_csv_files():
     """Close CSV files"""
-    global gnb_csv_file, ue_csv_file
-    if gnb_csv_file:
-        gnb_csv_file.close()
-    if ue_csv_file:
-        ue_csv_file.close()
+    global gnb_csv_file, ue_csv_file, gnb_rewrite_pending, ue_rewrite_pending
+    
+    # Wait for any pending rewrites to complete (with timeout)
+    import time
+    timeout = 30  # seconds
+    start_time = time.time()
+    while (gnb_rewrite_pending or ue_rewrite_pending) and (time.time() - start_time) < timeout:
+        time.sleep(0.1)
+    
+    with gnb_csv_lock:
+        if gnb_csv_file:
+            gnb_csv_file.close()
+            gnb_csv_file = None
+    with ue_csv_lock:
+        if ue_csv_file:
+            ue_csv_file.close()
+            ue_csv_file = None
+
+def _rewrite_gnb_csv_with_new_columns(new_fieldnames):
+    """Background thread function to rewrite gNB CSV with new columns"""
+    global gnb_csv_file, gnb_csv_writer, gnb_fieldnames, gnb_rewrite_pending
+    
+    try:
+        existing_data = []
+        if os.path.exists(CSV_GNB_FILE):
+            with open(CSV_GNB_FILE, 'r') as f:
+                reader = csv.DictReader(f)
+                existing_data = list(reader)
+        
+        # Rewrite file with new header
+        with open(CSV_GNB_FILE, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=new_fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            for old_row in existing_data:
+                writer.writerow(old_row)
+        
+        # Reopen in append mode
+        with gnb_csv_lock:
+            if gnb_csv_file:
+                gnb_csv_file.close()
+            gnb_csv_file = open(CSV_GNB_FILE, 'a', newline='')
+            gnb_csv_writer = csv.DictWriter(gnb_csv_file, fieldnames=new_fieldnames, extrasaction='ignore')
+            gnb_fieldnames = new_fieldnames
+            gnb_rewrite_pending = False
+    except Exception as e:
+        print(f"[RELAY] Error rewriting gNB CSV: {e}")
+        with gnb_csv_lock:
+            gnb_rewrite_pending = False
 
 def write_gnb_csv(timestamp, meid, cell_id, format_type, measurements):
-    """Write gNB (cell-level) measurements to CSV"""
-    global gnb_csv_writer, gnb_fieldnames, gnb_csv_file
+    """Write gNB (cell-level) measurements to CSV (non-blocking)"""
+    global gnb_csv_writer, gnb_fieldnames, gnb_csv_file, gnb_rewrite_pending
     
     if not gnb_csv_writer:
         return
     
-    row = {
-        'timestamp': timestamp,
-        'meid': meid,
-        'cell_id': cell_id,
-        'format': format_type
-    }
-    
-    for meas in measurements:
-        name = meas.get("name", f"id_{meas.get('id', 'unknown')}")
-        value = meas.get("value", "")
-        csv_name = get_measurement_label(name)
-        row[csv_name] = value
+    with gnb_csv_lock:
+        row = {
+            'timestamp': timestamp,
+            'meid': meid,
+            'cell_id': cell_id,
+            'format': format_type
+        }
         
-        if csv_name not in gnb_fieldnames:
-            gnb_fieldnames.append(csv_name)
-            gnb_csv_file.close()
-            existing_data = []
-            if os.path.exists(CSV_GNB_FILE):
-                with open(CSV_GNB_FILE, 'r') as f:
-                    reader = csv.DictReader(f)
-                    existing_data = list(reader)
-            gnb_csv_file = open(CSV_GNB_FILE, 'w', newline='')
-            gnb_csv_writer = csv.DictWriter(gnb_csv_file, fieldnames=gnb_fieldnames, extrasaction='ignore')
-            gnb_csv_writer.writeheader()
-            for old_row in existing_data:
-                gnb_csv_writer.writerow(old_row)
-            gnb_csv_file.close()
-            gnb_csv_file = open(CSV_GNB_FILE, 'a', newline='')
-            gnb_csv_writer = csv.DictWriter(gnb_csv_file, fieldnames=gnb_fieldnames, extrasaction='ignore')
+        new_columns = False
+        for meas in measurements:
+            name = meas.get("name", f"id_{meas.get('id', 'unknown')}")
+            value = meas.get("value", "")
+            csv_name = get_measurement_label(name)
+            row[csv_name] = value
+            
+            if csv_name not in gnb_fieldnames:
+                gnb_fieldnames = list(gnb_fieldnames) + [csv_name]
+                new_columns = True
+        
+        # If new columns detected, start background rewrite
+        if new_columns and not gnb_rewrite_pending:
+            gnb_rewrite_pending = True
+            # Start background thread for rewrite
+            threading.Thread(target=_rewrite_gnb_csv_with_new_columns, args=(gnb_fieldnames,), daemon=True).start()
+            # For now, write with current fieldnames (missing columns will be ignored)
+            # The rewrite will happen in background
+        
+        # Write row (extrasaction='ignore' will skip new columns until rewrite completes)
+        gnb_csv_writer.writerow(row)
+        # Only flush periodically to reduce I/O overhead
+        global gnb_write_count
+        gnb_write_count += 1
+        if gnb_write_count % FLUSH_INTERVAL == 0:
+            gnb_csv_file.flush()
+
+def _rewrite_ue_csv_with_new_columns(new_fieldnames):
+    """Background thread function to rewrite UE CSV with new columns"""
+    global ue_csv_file, ue_csv_writer, ue_fieldnames, ue_rewrite_pending
     
-    gnb_csv_writer.writerow(row)
-    gnb_csv_file.flush()
+    try:
+        existing_data = []
+        if os.path.exists(CSV_UE_FILE):
+            with open(CSV_UE_FILE, 'r') as f:
+                reader = csv.DictReader(f)
+                existing_data = list(reader)
+        
+        # Rewrite file with new header
+        with open(CSV_UE_FILE, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=new_fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            for old_row in existing_data:
+                writer.writerow(old_row)
+        
+        # Reopen in append mode
+        with ue_csv_lock:
+            if ue_csv_file:
+                ue_csv_file.close()
+            ue_csv_file = open(CSV_UE_FILE, 'a', newline='')
+            ue_csv_writer = csv.DictWriter(ue_csv_file, fieldnames=new_fieldnames, extrasaction='ignore')
+            ue_fieldnames = new_fieldnames
+            ue_rewrite_pending = False
+    except Exception as e:
+        print(f"[RELAY] Error rewriting UE CSV: {e}")
+        with ue_csv_lock:
+            ue_rewrite_pending = False
 
 def write_ue_csv(timestamp, meid, cell_id, ue_id, measurements):
-    """Write UE measurements to CSV"""
-    global ue_csv_writer, ue_fieldnames, ue_csv_file
+    """Write UE measurements to CSV (non-blocking)"""
+    global ue_csv_writer, ue_fieldnames, ue_csv_file, ue_rewrite_pending
     
     if not ue_csv_writer:
         return
     
-    row = {
-        'timestamp': timestamp,
-        'meid': meid,
-        'cell_id': cell_id,
-        'ue_id': ue_id
-    }
-    
-    for meas in measurements:
-        name = meas.get("name", f"id_{meas.get('id', 'unknown')}")
-        value = meas.get("value", "")
-        csv_name = get_measurement_label(name)
-        row[csv_name] = value
+    with ue_csv_lock:
+        row = {
+            'timestamp': timestamp,
+            'meid': meid,
+            'cell_id': cell_id,
+            'ue_id': ue_id
+        }
         
-        if csv_name not in ue_fieldnames:
-            ue_fieldnames.append(csv_name)
-            ue_csv_file.close()
-            existing_data = []
-            if os.path.exists(CSV_UE_FILE):
-                with open(CSV_UE_FILE, 'r') as f:
-                    reader = csv.DictReader(f)
-                    existing_data = list(reader)
-            ue_csv_file = open(CSV_UE_FILE, 'w', newline='')
-            ue_csv_writer = csv.DictWriter(ue_csv_file, fieldnames=ue_fieldnames, extrasaction='ignore')
-            ue_csv_writer.writeheader()
-            for old_row in existing_data:
-                ue_csv_writer.writerow(old_row)
-            ue_csv_file.close()
-            ue_csv_file = open(CSV_UE_FILE, 'a', newline='')
-            ue_csv_writer = csv.DictWriter(ue_csv_file, fieldnames=ue_fieldnames, extrasaction='ignore')
-    
-    ue_csv_writer.writerow(row)
-    ue_csv_file.flush()
+        new_columns = False
+        for meas in measurements:
+            name = meas.get("name", f"id_{meas.get('id', 'unknown')}")
+            value = meas.get("value", "")
+            csv_name = get_measurement_label(name)
+            row[csv_name] = value
+            
+            if csv_name not in ue_fieldnames:
+                ue_fieldnames = list(ue_fieldnames) + [csv_name]
+                new_columns = True
+        
+        # If new columns detected, start background rewrite
+        if new_columns and not ue_rewrite_pending:
+            ue_rewrite_pending = True
+            # Start background thread for rewrite
+            threading.Thread(target=_rewrite_ue_csv_with_new_columns, args=(ue_fieldnames,), daemon=True).start()
+            # For now, write with current fieldnames (missing columns will be ignored)
+            # The rewrite will happen in background
+        
+        # Write row (extrasaction='ignore' will skip new columns until rewrite completes)
+        ue_csv_writer.writerow(row)
+        # Only flush periodically to reduce I/O overhead
+        global ue_write_count
+        ue_write_count += 1
+        if ue_write_count % FLUSH_INTERVAL == 0:
+            ue_csv_file.flush()
 
 def process_kpi_for_csv(msg):
     """Process KPI message and write to CSV files"""

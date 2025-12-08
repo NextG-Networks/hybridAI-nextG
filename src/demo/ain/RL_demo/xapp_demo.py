@@ -14,9 +14,11 @@ import argparse
 import asyncio
 import csv
 import json
+import signal
 import struct
 import sys
 import time
+import threading
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone
@@ -398,18 +400,33 @@ class XAppTCPServer:
         else:
             self.kpi_csv_file = Path(kpi_csv_file)
         self.kpi_csv_initialized = False
+        self.kpi_csv_fieldnames = None  # Cached fieldnames to avoid reading file every time
+        self.kpi_csv_lock = threading.Lock()  # Lock for thread-safe CSV operations
+        self.kpi_csv_rewrite_pending = False  # Flag to track if rewrite is in progress
+        self.kpi_csv_write_count = 0  # Counter for periodic flushing
+        self.KPI_CSV_FLUSH_INTERVAL = 10  # Flush every 10 writes
         self._init_kpi_csv()
     
     def _init_kpi_csv(self):
         """Initialize KPI CSV file with base headers if it doesn't exist."""
+        base_fieldnames = ['timestamp', 'meid', 'cell_id', 'node_id', 'format']
         if not self.kpi_csv_file.exists():
             with open(self.kpi_csv_file, 'w', newline='') as f:
                 writer = csv.writer(f)
                 # Only write base columns - measurement columns will be added dynamically
-                writer.writerow(['timestamp', 'meid', 'cell_id', 'node_id', 'format'])
+                writer.writerow(base_fieldnames)
+            self.kpi_csv_fieldnames = base_fieldnames
             self.kpi_csv_initialized = True
             logger.info(f"Initialized KPI CSV file: {self.kpi_csv_file}")
         else:
+            # Cache existing fieldnames to avoid reading file every time
+            try:
+                with open(self.kpi_csv_file, 'r') as f:
+                    reader = csv.DictReader(f)
+                    self.kpi_csv_fieldnames = list(reader.fieldnames) if reader.fieldnames else base_fieldnames
+            except Exception as e:
+                logger.warning(f"Could not read existing CSV fieldnames: {e}, using defaults")
+                self.kpi_csv_fieldnames = base_fieldnames
             self.kpi_csv_initialized = True
     
     def _write_kpi_to_csv(self, kpi_data: Dict[str, Any], meid: str, cell_id: str, node_id: Optional[int] = None, is_ue_data: bool = False):
@@ -452,61 +469,58 @@ class XAppTCPServer:
             # Note: UE measurements are now written separately (see caller)
             # This function only handles cell-level data when is_ue_data=False
             
-            # Check if we need to add new columns to CSV
-            # Read existing file to get current fieldnames
-            existing_fieldnames = []
-            if self.kpi_csv_file.exists():
-                with open(self.kpi_csv_file, 'r') as f:
-                    reader = csv.DictReader(f)
-                    existing_fieldnames = list(reader.fieldnames) if reader.fieldnames else []
-            
-            # Base fieldnames (always present)
-            base_fieldnames = ['timestamp', 'meid', 'cell_id', 'node_id', 'format']
-            
-            # Get all metric names (from existing file + new metrics)
-            all_metric_names = set()
-            if existing_fieldnames:
-                # Get metric columns (everything except base columns)
-                all_metric_names = set(existing_fieldnames) - set(base_fieldnames)
-            
-            # Add new metric names
-            all_metric_names.update(metrics.keys())
-            
-            # Sort metric names for consistent column order
-            sorted_metric_names = sorted(all_metric_names)
-            fieldnames = base_fieldnames + sorted_metric_names
-            
-            # If we have new columns, rewrite the file with new header
-            if set(fieldnames) != set(existing_fieldnames or base_fieldnames):
-                # Read all existing rows
-                existing_rows = []
-                if self.kpi_csv_file.exists() and existing_fieldnames:
-                    with open(self.kpi_csv_file, 'r') as f:
-                        reader = csv.DictReader(f)
-                        existing_rows = list(reader)
+            # Use cached fieldnames (avoid reading file every time)
+            with self.kpi_csv_lock:
+                base_fieldnames = ['timestamp', 'meid', 'cell_id', 'node_id', 'format']
+                existing_fieldnames = self.kpi_csv_fieldnames or base_fieldnames
                 
-                # Rewrite file with new header
-                with open(self.kpi_csv_file, 'w', newline='') as f:
-                    writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
-                    writer.writeheader()
-                    for row in existing_rows:
-                        writer.writerow(row)
+                # Get all metric names (from cached fieldnames + new metrics)
+                all_metric_names = set()
+                if existing_fieldnames:
+                    # Get metric columns (everything except base columns)
+                    all_metric_names = set(existing_fieldnames) - set(base_fieldnames)
+                
+                # Add new metric names
+                all_metric_names.update(metrics.keys())
+                
+                # Sort metric names for consistent column order
+                sorted_metric_names = sorted(all_metric_names)
+                fieldnames = base_fieldnames + sorted_metric_names
+                
+                # If we have new columns, start background rewrite
+                if set(fieldnames) != set(existing_fieldnames):
+                    if not self.kpi_csv_rewrite_pending:
+                        self.kpi_csv_rewrite_pending = True
+                        # Start background thread for rewrite
+                        threading.Thread(
+                            target=self._rewrite_csv_with_new_columns,
+                            args=(fieldnames,),
+                            daemon=True
+                        ).start()
+                    # Update cached fieldnames immediately (rewrite will complete in background)
+                    self.kpi_csv_fieldnames = fieldnames
+                
+                # Write new row (extrasaction='ignore' will skip new columns until rewrite completes)
+                row = {
+                    'timestamp': timestamp,
+                    'meid': meid,
+                    'cell_id': cell_id,
+                    'node_id': node_id if node_id is not None else '',
+                    'format': kpi_data.get("format", "F1"),
+                }
+                
+                # Add all metrics
+                row.update(metrics)
             
-            # Write new row
-            row = {
-                'timestamp': timestamp,
-                'meid': meid,
-                'cell_id': cell_id,
-                'node_id': node_id if node_id is not None else '',
-                'format': kpi_data.get("format", "F1"),
-            }
-            
-            # Add all metrics
-            row.update(metrics)
-            
+            # Write to file (outside lock to minimize lock time, but fieldnames are already cached)
             with open(self.kpi_csv_file, 'a', newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+                writer = csv.DictWriter(f, fieldnames=self.kpi_csv_fieldnames, extrasaction='ignore')
                 writer.writerow(row)
+                
+                # Periodic flush to reduce I/O overhead
+                self.kpi_csv_write_count += 1
+                if self.kpi_csv_write_count % self.KPI_CSV_FLUSH_INTERVAL == 0:
+                    f.flush()
                 
         except Exception as e:
             logger.error(f"Error writing KPI to CSV: {e}", exc_info=True)
@@ -893,18 +907,29 @@ async def run_ai_loop(
     # Now create the real observer with predictor attached
     observer = RLObserver(predictor=predictor, intent=tmp_intent, kpi_file=str(temp_kpi_file), window=12)
     
-    # Load pre-trained model if provided
-    if offline_model:
+    # Load model: Try online checkpoint first, then offline model, then start from scratch
+    online_checkpoint = "models/qnet_online.pt"
+    model_loaded = False
+    
+    # Try to load online checkpoint (resume from previous run)
+    if predictor.load_checkpoint(online_checkpoint, load_replay_buffer=False):
+        logger.info(f"✓ Resumed training from online checkpoint: {online_checkpoint} (step={predictor.steps})")
+        model_loaded = True
+    # Fallback to offline model if provided
+    elif offline_model:
         try:
             predictor.load_offline(offline_model)
-            logger.info(f"Loaded pre-trained model from {offline_model}")
+            logger.info(f"✓ Loaded pre-trained offline model from {offline_model}")
+            model_loaded = True
         except Exception as e:
             logger.warning(f"Could not load pre-trained model ({e}). Starting from scratch.")
+    else:
+        logger.info("Starting from scratch (no checkpoint or offline model provided)")
     
     # Create actor with TCP server
     # Use provided default_node_id, or 0 as fallback (will be overridden by actual mappings from KPIs)
     actor_node_id = default_node_id if default_node_id is not None else 0
-    actor = XAppActor("configs", tcp_server, meid="gnb:131-133-31000000", node_id=actor_node_id)
+    actor = XAppActor("playbooks", tcp_server, meid="gnb:131-133-31000000", node_id=actor_node_id)
     
     # KPI adapter
     kpi_adapter = XAppKPIAdapter()
@@ -919,10 +944,24 @@ async def run_ai_loop(
     current_client_id = None
     current_meid = "gnb:131-133-31000000"
     
-    if offline_model:
+    if model_loaded:
         logger.info("AI loop started with pre-trained model, waiting for KPIs from xApp...")
     else:
         logger.info("AI loop started (training from scratch), waiting for KPIs from xApp...")
+    
+    # Setup signal handlers to save checkpoint on exit
+    online_checkpoint = "models/qnet_online.pt"
+    def save_on_exit(signum=None, frame=None):
+        """Save checkpoint before exiting."""
+        try:
+            checkpoint_path = predictor.save_checkpoint(online_checkpoint, save_replay_buffer=False)
+            logger.info(f"💾 Saved final checkpoint to {checkpoint_path} (step={predictor.steps})")
+        except Exception as e:
+            logger.error(f"Failed to save checkpoint on exit: {e}")
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, save_on_exit)
+    signal.signal(signal.SIGTERM, save_on_exit)
     
     while step < steps:
         # Wait for KPI from xApp
@@ -1069,6 +1108,14 @@ async def run_ai_loop(
         last_playbook = best_pb
         predictor.steps += 1
         step += 1
+        
+        # Save checkpoint periodically (every 50 steps) and on success
+        if (step % 50 == 0) or (success_streak >= 4):
+            try:
+                checkpoint_path = predictor.save_checkpoint(online_checkpoint, save_replay_buffer=False)
+                logger.info(f"💾 Saved checkpoint to {checkpoint_path} (step={step}, replay_size={len(predictor.replay)})")
+            except Exception as e:
+                logger.warning(f"Failed to save checkpoint: {e}")
         
         if success_streak >= 4:
             logger.info(f"Intent achieved for {success_streak} consecutive readings. Resetting streak.")

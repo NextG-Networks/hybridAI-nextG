@@ -6,9 +6,13 @@ Publishes deviation events that the reasoner can use to create intents.
 """
 
 import asyncio
+import logging
 from typing import Dict, Any, Optional, List
 from .utils import make_msg
 from datetime import datetime, timezone
+from ain.common.log_config import should_log, LOG_DEVIATION
+
+logger = logging.getLogger(__name__)
 
 
 class DeviationDetectorAgent:
@@ -23,9 +27,17 @@ class DeviationDetectorAgent:
             deviation_threshold: Relative threshold for deviation (0.1 = 10% deviation)
         """
         self.bus = bus
+        # Map internal metric names to CSV column names for compatibility
+        # USE ACTUAL CSV COLUMN NAMES from kpms.csv
+        # gNB: DRB_PdcpSduDelayDl, RRU_PrbUsedDl, DRB_MeanActiveUeDl, etc.
+        # UE: UE_DRB_PdcpSduDelayDl_UEID, UE_DRB_UEThpDl_UEID, etc.
+        self.metric_mapping = {
+            "DRB_PdcpSduDelayDl": ["DRB_PdcpSduDelayDl", "delay_p95_ms", "UE_PDCP_Delay_DL_ms"],  # Support old names for compatibility
+            "UE_DRB_UEThpDl_UEID": ["UE_DRB_UEThpDl_UEID", "thr_dl_bps", "UE_Throughput_DL_Mbps"],  # Support old names
+        }
         self.default_targets = default_targets or {
-            "delay_p95_ms": 40.0,
-            "thr_dl_bps": 50e6,
+            "DRB_PdcpSduDelayDl": 10.0,  # Target delay in ms (gNB level)
+            "UE_DRB_UEThpDl_UEID": 40e6,  # Target throughput in bps (UE level, aggregated)
         }
         self.deviation_threshold = deviation_threshold
         self.current_intent: Optional[Dict[str, Any]] = None
@@ -53,7 +65,8 @@ class DeviationDetectorAgent:
                 await self.bus.pub("deviation.detected", make_msg(
                     "deviation.detected", "DEVIATION", "deviation.v1", dev
                 ))
-                print(f"[DeviationDetector] Detected deviation: {dev['metric']}={dev['value']:.2f} (target={dev.get('target', 'N/A')})")
+                if should_log(LOG_DEVIATION):
+                    logger.info(f"[DEVIATION] Detected deviation: {dev['metric']}={dev['value']:.2f} (target={dev.get('target', 'N/A')})")
     
     async def _listen_intent(self, q):
         """Listen for intent updates to know current targets."""
@@ -78,7 +91,17 @@ class DeviationDetectorAgent:
         
         # Check each metric against targets
         for metric, target in self.default_targets.items():
+            # Try to get value using internal name first, then try CSV column names
             value = cell_metrics.get(metric)
+            if value is None and metric in self.metric_mapping:
+                # Try alternative metric names from CSV
+                for alt_name in self.metric_mapping[metric]:
+                    if alt_name != metric:  # Skip the one we already tried
+                        value = cell_metrics.get(alt_name)
+                        if value is not None:
+                            # Found value using CSV column name, but report using internal metric name
+                            break
+            
             if value is None:
                 continue
             

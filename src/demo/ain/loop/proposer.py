@@ -2,8 +2,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional, Any
 import random
+import logging
 import numpy as np
 from ain.common.types import ControlAction, Playbook
+
+logger = logging.getLogger(__name__)
 
 # Import contextual bandit components
 try:
@@ -25,12 +28,53 @@ COOLDOWN_STEPS = 3     # cooldown per (type, scope, entity)
 ActionType = str   # {"SCHEDULER_POLICY","MCS_CAP","PRB_WEIGHT","SLICE_QOS","TX_POWER","POWER_CONTROL","REPORTING"}
 ScopeType = str    # {"CELL","UE","SLICE"}
 
-# Small demo grids this would later be sent by the actual network as a "what can we change now" message
-SCHEDULER_POLICIES = ["PF", "RR", "MAX_THROUGHPUT"]
-MCS_DL_MAX_GRID = [14, 18, 22]
-PRB_WEIGHT_GRID = [0.8, 1.0, 1.2]
-SLICE_WEIGHT_GRID = [0.8, 1.0, 1.2]
-TX_POWER_DBM_GRID = [40.0, 43.0, 46.0, 49.0, 52.0]  # Transmission power in dBm
+# Action parameter ranges - define min, max, and step for continuous/discrete sampling
+# These would later be sent by the actual network as a "what can we change now" message
+
+# Scheduler policies (discrete choices)
+SCHEDULER_POLICIES = ["PF", "RR", "MAX_THROUGHPUT", "WEIGHTED_FAIR", "QOS_AWARE"]
+
+# MCS (Modulation and Coding Scheme) - range: 0-28, typically use 12-28
+MCS_DL_MIN = 12
+MCS_DL_MAX = 28
+MCS_DL_STEP = 2  # Sample every 2 MCS levels
+
+# PRB Weight - range: 0.5 to 2.0, step 0.1
+PRB_WEIGHT_MIN = 0.5
+PRB_WEIGHT_MAX = 2.0
+PRB_WEIGHT_STEP = 0.1
+
+# Slice QoS Weight - range: 0.5 to 2.0, step 0.1
+SLICE_WEIGHT_MIN = 0.5
+SLICE_WEIGHT_MAX = 2.0
+SLICE_WEIGHT_STEP = 0.1
+
+# TX Power - range: 30.0 to 60.0 dBm, step 1.0
+TX_POWER_DBM_MIN = 30.0
+TX_POWER_DBM_MAX = 60.0
+TX_POWER_DBM_STEP = 1.0
+
+def generate_mcs_values(min_val=MCS_DL_MIN, max_val=MCS_DL_MAX, step=MCS_DL_STEP):
+    """Generate MCS values in range."""
+    return list(range(min_val, max_val + 1, step))
+
+def generate_weight_values(min_val=PRB_WEIGHT_MIN, max_val=PRB_WEIGHT_MAX, step=PRB_WEIGHT_STEP):
+    """Generate weight values in range."""
+    values = []
+    current = min_val
+    while current <= max_val:
+        values.append(round(current, 1))
+        current += step
+    return values
+
+def generate_tx_power_values(min_val=TX_POWER_DBM_MIN, max_val=TX_POWER_DBM_MAX, step=TX_POWER_DBM_STEP):
+    """Generate TX power values in range."""
+    values = []
+    current = min_val
+    while current <= max_val:
+        values.append(round(current, 1))
+        current += step
+    return values
 
 @dataclass
 class ActionSpace:
@@ -38,19 +82,39 @@ class ActionSpace:
     slices: List[str]
     
     def all_atomic_actions(self) -> List[ControlAction]:
+        """Generate all possible atomic actions from defined ranges."""
         acts: List[ControlAction] = []
+        
+        # Generate MCS and TX power values from ranges
+        mcs_values = generate_mcs_values()
+        prb_weight_values = generate_weight_values(PRB_WEIGHT_MIN, PRB_WEIGHT_MAX, PRB_WEIGHT_STEP)
+        slice_weight_values = generate_weight_values(SLICE_WEIGHT_MIN, SLICE_WEIGHT_MAX, SLICE_WEIGHT_STEP)
+        tx_power_values = generate_tx_power_values()
+        
+        # Cell-level actions
         for c in self.cells:
+            # Scheduler policies (discrete choices)
             for pol in SCHEDULER_POLICIES:
                 acts.append(ControlAction("SCHEDULER_POLICY", "CELL", cell_id=c, params={"policy": pol}))
-            for m in MCS_DL_MAX_GRID:
+            
+            # MCS Cap (from range)
+            for m in mcs_values:
                 acts.append(ControlAction("MCS_CAP", "CELL", cell_id=c, params={"dl_mcs_max": m}))
-            for tx_power in TX_POWER_DBM_GRID:
+            
+            # TX Power (from range)
+            for tx_power in tx_power_values:
                 acts.append(ControlAction("TX_POWER", "CELL", cell_id=c, params={"txPowerDbm": tx_power}))
+        
+        # Slice-level actions
         for s in self.slices:
-            for w in PRB_WEIGHT_GRID:
+            # PRB Weight (from range)
+            for w in prb_weight_values:
                 acts.append(ControlAction("PRB_WEIGHT", "SLICE", slice_id=s, params={"weight": w}))
-            for w in SLICE_WEIGHT_GRID:
+            
+            # Slice QoS Weight (from range)
+            for w in slice_weight_values:
                 acts.append(ControlAction("SLICE_QOS", "SLICE", slice_id=s, params={"weight": w}))
+        
         # Include a NOOP-like action
         acts.append(ControlAction("REPORTING", "CELL", params={"noop": True}))
         return acts

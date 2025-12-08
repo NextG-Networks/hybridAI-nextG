@@ -1,6 +1,7 @@
 # observer_rl.py - Enhanced with Contextual Bandit capabilities
 from __future__ import annotations
 import json
+import logging
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,6 +9,9 @@ from typing import Deque, Dict, List, Optional, Tuple, Any
 
 import numpy as np
 import torch
+from ain.common.log_config import should_log, LOG_REWARD, LOG_OBSERVER, LOG_INTENT
+
+logger = logging.getLogger(__name__)
 
 # Import contextual bandit components
 try:
@@ -42,6 +46,8 @@ class RLObserver:
         device: Optional[torch.device] = None,
         enable_contextual_bandit: bool = True,  # NEW: Feature flag
         min_feature_completeness: float = 0.5,  # Minimum fraction of features that must be present (0.0-1.0)
+        enable_multi_metric_reward: bool = True,  # NEW: Enable multi-metric reward calculation
+        slo_config: Optional[Any] = None,  # NEW: SLO configuration for multi-metric rewards
     ):
         self.predictor = predictor
         self.intent = intent
@@ -53,6 +59,17 @@ class RLObserver:
         self.last_state_win: Optional[np.ndarray] = None  # [W, F]
         self.use_internal_encoder = use_internal_encoder
         self.min_feature_completeness = min_feature_completeness
+        self.enable_multi_metric_reward = enable_multi_metric_reward
+        self.slo_config = slo_config  # SLO configuration for multi-metric rewards
+        
+        # Track last known values for each metric (to handle fragmented KPIs)
+        # This allows us to compute rewards even when metrics arrive in different KPI messages
+        self.last_metric_values: Dict[str, float] = {}  # metric_name -> last known value
+        
+        # Track last read file state to avoid duplicate KPI reads
+        self._last_file_mtime: float = 0.0  # Last file modification time
+        self._last_read_timestamp: Optional[str] = None  # Last read KPI timestamp
+        self._last_read_kpi_hash: Optional[str] = None  # Hash of last read KPI content (for duplicate detection)
 
         # NEW: Contextual bandit components
         self.enable_contextual_bandit = enable_contextual_bandit and BANDIT_AVAILABLE
@@ -67,42 +84,120 @@ class RLObserver:
             print("[Observer] Contextual bandit mode enabled")
         else:
             print("[Observer] Basic mode (no contextual bandit)")
+        
+        # Log multi-metric reward status
+        if self.enable_multi_metric_reward and self.slo_config:
+            slo_metrics = list(self.slo_config.slos.keys()) if hasattr(self.slo_config, 'slos') else []
+            print(f"[Observer] Multi-metric reward enabled: tracking {len(slo_metrics)} SLO metrics")
+        elif self.enable_multi_metric_reward:
+            print("[Observer] Multi-metric reward enabled but no SLO config provided - using single metric")
 
-        # Select features (defaults chosen from your schema)
+        # Select features - USE ACTUAL CSV COLUMN NAMES
+        # gNB LEVEL (no UE prefix): DRB_MeanActiveUeDl, DRB_PdcpSduDelayDl, RRU_PrbUsedDl, 
+        #                            TB_TotNbrDlInitial_16Qam, TB_TotNbrDlInitial_64Qam, TB_TotNbrDlInitial_Qpsk
+        # UE LEVEL (UE_ prefix): UE_DRB_PdcpSduDelayDl_UEID, UE_DRB_UEThpDl_UEID, UE_RRU_PrbUsedDl_UEID, etc.
+        # Note: UE metrics are aggregated into cell-level metrics (sum/max) for global context
         self.features = features or [
-            "thr_dl_bps",
-            "thr_ul_bps",
-            "bler_dl",
-            "bler_ul",
-            "cqi_avg",
-            "mcs_dl_avg",
-            "mcs_ul_avg",
-            "active_ue_count",
-            "prb_used_dl_ratio",
-            "delay_p95_ms",
+            "DRB_PdcpSduDelayDl",           # Delay metric (gNB level)
+            "RRU_PrbUsedDl",                # PRB usage (gNB level)
+            "DRB_MeanActiveUeDl",           # Active UE count (gNB level)
+            "TB_TotNbrDlInitial_Qpsk",      # QPSK transport blocks (gNB level)
+            "TB_TotNbrDlInitial_16Qam",     # 16QAM transport blocks (gNB level)
+            "TB_TotNbrDlInitial_64Qam",     # 64QAM transport blocks (gNB level)
+            "UE_DRB_PdcpSduDelayDl_UEID",   # UE delay (aggregated max from UE level)
+            "UE_DRB_UEThpDl_UEID",          # UE throughput (aggregated sum from UE level)
+            "UE_RRU_PrbUsedDl_UEID",        # UE PRB usage (aggregated sum from UE level)
+            "UE_DRB_EstabSucc_5QI_UEID",    # DRB establishment success (aggregated sum from UE level)
         ]
 
-        # Simple fixed scalers (adjust as you like)
+        # Simple fixed scalers (adjust as you like) - USE ACTUAL CSV COLUMN NAMES
         self.scalers = {
-            "thr_dl_bps": 1e6,  # scale to Mbps
-            "thr_ul_bps": 1e6,
-            "cqi_avg": 15.0,
-            "mcs_dl_avg": 28.0,
-            "mcs_ul_avg": 28.0,
-            "active_ue_count": 100.0,
-            "delay_p95_ms": 100.0,
+            "DRB_PdcpSduDelayDl": 100.0,              # scale to 0-1 range (100ms max)
+            "RRU_PrbUsedDl": 100.0,                  # scale to 0-1 range (100 PRBs max)
+            "DRB_MeanActiveUeDl": 20.0,              # scale to 0-1 range (20 UEs max)
+            "TB_TotNbrDlInitial_Qpsk": 1000.0,       # scale to 0-1 range
+            "TB_TotNbrDlInitial_16Qam": 1000.0,     # scale to 0-1 range
+            "TB_TotNbrDlInitial_64Qam": 1000.0,     # scale to 0-1 range
+            "UE_DRB_PdcpSduDelayDl_UEID": 100.0,    # scale to 0-1 range (100ms max)
+            "UE_DRB_UEThpDl_UEID": 100e6,           # scale to 0-1 range (100 Mbps = 100e6 bps)
+            "UE_RRU_PrbUsedDl_UEID": 50.0,          # scale to 0-1 range (50 PRBs max)
+            "UE_DRB_EstabSucc_5QI_UEID": 100.0,     # scale to 0-1 range
         }
 
     # ---------- KPI reading & preprocessing ----------
     def _read_latest_kpi(self) -> Optional[Dict]:
+        """
+        Read the latest KPI from file, but only if it's different from the last read.
+        This prevents returning the same KPI multiple times, which would cause s1 = s2.
+        """
         if not self.kpi_file.exists():
             return None
-        with open(self.kpi_file, "r") as f:
-            data = json.load(f)
+        
+        # Check file modification time to detect changes
+        try:
+            current_mtime = self.kpi_file.stat().st_mtime
+        except (OSError, FileNotFoundError):
+            return None
+        
+        # If file hasn't changed since last read, return None (skip this step)
+        # This prevents reading the same KPI multiple times
+        if current_mtime <= self._last_file_mtime:
+            return None
+        
+        # Read the file
+        try:
+            with open(self.kpi_file, "r") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return None
+        
         stream = data.get("kpi_stream", [])
         if not stream:
             return None
-        return stream[-1]
+        
+        kpi = stream[-1]
+        
+        # Additional check: compare KPI content hash to detect duplicates
+        # This is more reliable than timestamp because fragments share the same timestamp
+        # but have different metric values
+        import hashlib
+        import json as json_module
+        
+        # Create a hash of the KPI's CellMetrics (the actual data we care about)
+        # This detects if metric values have changed, even if timestamp is the same
+        cell_metrics = kpi.get("CellMetrics", {})
+        # Sort keys for consistent hashing
+        metrics_str = json_module.dumps(cell_metrics, sort_keys=True)
+        kpi_hash = hashlib.md5(metrics_str.encode()).hexdigest()
+        
+        # If the hash matches the last read, it's the same KPI content - skip
+        if self._last_read_kpi_hash == kpi_hash:
+            # Same KPI content as last time - skip to avoid duplicate processing
+            if should_log(LOG_OBSERVER):
+                logger.debug(f"[OBSERVER] Skipping duplicate KPI (hash={kpi_hash[:8]}...), file mtime changed but content unchanged")
+            return None
+        
+        # Log when we detect a new KPI (different hash)
+        if should_log(LOG_OBSERVER) and self._last_read_kpi_hash is not None:
+            delay_val = cell_metrics.get('DRB_PdcpSduDelayDl', 'N/A')
+            logger.debug(f"[OBSERVER] New KPI detected (hash={kpi_hash[:8]}...), delay={delay_val}, file mtime={current_mtime:.6f}")
+        
+        # Also check timestamp as a secondary check
+        kpi_timestamp = (
+            kpi.get("timestamp") or 
+            kpi.get("Header", {}).get("window_start") or
+            kpi.get("Header", {}).get("window_end") or
+            str(kpi.get("Header", {}).get("sequence_number", ""))
+        )
+        
+        # Update tracking variables
+        self._last_file_mtime = current_mtime
+        self._last_read_timestamp = kpi_timestamp
+        self._last_read_kpi_hash = kpi_hash
+        
+        # Return a deep copy to prevent modifications from affecting stored references
+        from copy import deepcopy
+        return deepcopy(kpi)
 
     def _extract_features_row(self, kpi: Dict) -> Tuple[np.ndarray, float]:
         """
@@ -113,32 +208,20 @@ class RLObserver:
         """
         cell = kpi.get("CellMetrics", {})
         
-        # For derived ratios, we need to check if base values exist
-        prb_total = cell.get("prb_total")
-        prb_used_dl = cell.get("prb_used_dl")
-        
-        # build feature vector in configured order
+        # build feature vector in configured order - USE ACTUAL METRIC NAMES
         vals: List[float] = []
         present_count = 0
         
         for name in self.features:
-            if name == "prb_used_dl_ratio":
-                # Derived feature: only valid if both base values exist
-                if prb_used_dl is not None and prb_total is not None and prb_total > 0:
-                    v = float(prb_used_dl) / max(float(prb_total), 1.0)
+            # Direct feature: check if present in cell metrics
+            if name in cell and cell[name] is not None:
+                try:
+                    v = float(cell[name])
                     present_count += 1
-                else:
+                except (ValueError, TypeError):
                     v = np.nan
             else:
-                # Direct feature: check if present in cell metrics
-                if name in cell and cell[name] is not None:
-                    try:
-                        v = float(cell[name])
-                        present_count += 1
-                    except (ValueError, TypeError):
-                        v = np.nan
-                else:
-                    v = np.nan
+                v = np.nan
             
             # scale (only if value is not NaN)
             if not np.isnan(v):
@@ -187,8 +270,33 @@ class RLObserver:
             win = np.stack(padded, axis=0)
         else:
             win = np.stack(filled_buf, axis=0)
+        
+        # Final cleanup: ensure no NaN values remain in the window
+        # For each feature column, if all values are NaN, fill with 0
+        # Otherwise, forward-fill then backward-fill
+        for f in range(win.shape[1]):
+            col = win[:, f]
+            if np.isnan(col).any():
+                # Check if any values are valid
+                valid_mask = ~np.isnan(col)
+                if valid_mask.any():
+                    # Forward fill from first valid
+                    first_valid_idx = np.where(valid_mask)[0][0]
+                    first_valid_val = col[first_valid_idx]
+                    col[:first_valid_idx] = first_valid_val
+                    # Forward fill remaining
+                    for i in range(1, len(col)):
+                        if np.isnan(col[i]):
+                            col[i] = col[i-1]
+                else:
+                    # All NaN - fill with zero
+                    col[:] = 0.0
+        
+        # Final safety check: replace any remaining NaN/inf with zero
+        win = np.nan_to_num(win, nan=0.0, posinf=0.0, neginf=0.0)
+        
         self.last_state_win = win
-        return win  # [W, F]
+        return win  # [W, F] - guaranteed to have no NaN values
 
     # ---------- NEW: Context extraction methods ----------
     def _extract_context(self, kpi: Dict) -> Optional[NetworkContext]:
@@ -317,7 +425,7 @@ class RLObserver:
         return min(bonus, 0.5)  # Maximum 0.5 bonus per playbook
 
     def _extract_metrics_dict(self, kpi: Dict) -> Dict[str, float]:
-        """Extract metrics as dictionary for reward calculation, using NaN for missing values."""
+        """Extract metrics as dictionary for reward calculation, using actual CSV column names."""
         cell = kpi.get("CellMetrics", {})
         def safe_float(val, default=np.nan):
             if val is None:
@@ -327,17 +435,57 @@ class RLObserver:
             except (ValueError, TypeError):
                 return default
         
-        return {
-            "delay_p95_ms": safe_float(cell.get("delay_p95_ms")),
-            "thr_dl_bps": safe_float(cell.get("thr_dl_bps")),
-            "thr_ul_bps": safe_float(cell.get("thr_ul_bps")),
-            "bler_dl": safe_float(cell.get("bler_dl")),
-            "bler_ul": safe_float(cell.get("bler_ul")),
-            "cqi_avg": safe_float(cell.get("cqi_avg")),
-            "mcs_dl_avg": safe_float(cell.get("mcs_dl_avg")),
-            "active_ue_count": safe_float(cell.get("active_ue_count")),
-            "prb_used_dl": safe_float(cell.get("prb_used_dl")),
-        }
+        # Extract metrics using ACTUAL CSV column names (as they appear in CellMetrics)
+        # These are the names that the KPI adapter puts into CellMetrics
+        metrics = {}
+        
+        # gNB-level metrics (actual CSV column names)
+        if "DRB_PdcpSduDelayDl" in cell:
+            metrics["DRB_PdcpSduDelayDl"] = safe_float(cell["DRB_PdcpSduDelayDl"])
+        if "RRU_PrbUsedDl" in cell:
+            metrics["RRU_PrbUsedDl"] = safe_float(cell["RRU_PrbUsedDl"])
+        if "DRB_MeanActiveUeDl" in cell:
+            metrics["DRB_MeanActiveUeDl"] = safe_float(cell["DRB_MeanActiveUeDl"])
+        if "TB_TotNbrDlInitial_Qpsk" in cell:
+            metrics["TB_TotNbrDlInitial_Qpsk"] = safe_float(cell["TB_TotNbrDlInitial_Qpsk"])
+        if "TB_TotNbrDlInitial_16Qam" in cell:
+            metrics["TB_TotNbrDlInitial_16Qam"] = safe_float(cell["TB_TotNbrDlInitial_16Qam"])
+        if "TB_TotNbrDlInitial_64Qam" in cell:
+            metrics["TB_TotNbrDlInitial_64Qam"] = safe_float(cell["TB_TotNbrDlInitial_64Qam"])
+        
+        # UE-level metrics (aggregated into cell-level, actual CSV column names)
+        if "UE_DRB_PdcpSduDelayDl_UEID" in cell:
+            metrics["UE_DRB_PdcpSduDelayDl_UEID"] = safe_float(cell["UE_DRB_PdcpSduDelayDl_UEID"])
+        if "UE_DRB_UEThpDl_UEID" in cell:
+            metrics["UE_DRB_UEThpDl_UEID"] = safe_float(cell["UE_DRB_UEThpDl_UEID"])
+        if "UE_DRB_BlerDl_UEID" in cell:
+            metrics["UE_DRB_BlerDl_UEID"] = safe_float(cell["UE_DRB_BlerDl_UEID"])
+        if "UE_RRU_PrbUsedDl_UEID" in cell:
+            metrics["UE_RRU_PrbUsedDl_UEID"] = safe_float(cell["UE_RRU_PrbUsedDl_UEID"])
+        if "UE_DRB_EstabSucc_5QI_UEID" in cell:
+            metrics["UE_DRB_EstabSucc_5QI_UEID"] = safe_float(cell["UE_DRB_EstabSucc_5QI_UEID"])
+        
+        # Legacy/fallback names (for backward compatibility, but prefer CSV names)
+        if "delay_p95_ms" in cell and "DRB_PdcpSduDelayDl" not in metrics:
+            metrics["delay_p95_ms"] = safe_float(cell["delay_p95_ms"])
+        if "thr_dl_bps" in cell and "UE_DRB_UEThpDl_UEID" not in metrics:
+            metrics["thr_dl_bps"] = safe_float(cell["thr_dl_bps"])
+        if "thr_ul_bps" in cell:
+            metrics["thr_ul_bps"] = safe_float(cell["thr_ul_bps"])
+        if "bler_dl" in cell and "UE_DRB_BlerDl_UEID" not in metrics:
+            metrics["bler_dl"] = safe_float(cell["bler_dl"])
+        if "bler_ul" in cell:
+            metrics["bler_ul"] = safe_float(cell["bler_ul"])
+        if "cqi_avg" in cell:
+            metrics["cqi_avg"] = safe_float(cell["cqi_avg"])
+        if "mcs_dl_avg" in cell:
+            metrics["mcs_dl_avg"] = safe_float(cell["mcs_dl_avg"])
+        if "active_ue_count" in cell and "DRB_MeanActiveUeDl" not in metrics:
+            metrics["active_ue_count"] = safe_float(cell["active_ue_count"])
+        if "prb_used_dl" in cell and "RRU_PrbUsedDl" not in metrics:
+            metrics["prb_used_dl"] = safe_float(cell["prb_used_dl"])
+        
+        return metrics
 
     # ---------- Enhanced Reward Calculation ----------
     def _compute_reward(self, prev_kpi: Dict, curr_kpi: Dict, actions_len: int) -> float:
@@ -349,16 +497,50 @@ class RLObserver:
         prev_cell = prev_kpi.get("CellMetrics", {})
         curr_cell = curr_kpi.get("CellMetrics", {})
         
-        # Handle missing values gracefully
+        # Try to get metric value with fallback to alternative names
         prev_val = prev_cell.get(metric)
         curr_val = curr_cell.get(metric)
         
-        # If either value is missing, return neutral reward
-        if prev_val is None or curr_val is None or np.isnan(prev_val) or np.isnan(curr_val):
+        # Fallback: try alternative metric names (for compatibility)
+        if prev_val is None or curr_val is None:
+            # Map common metric names to alternatives
+            metric_alternatives = {
+                "DRB_PdcpSduDelayDl": ["delay_p95_ms", "UE_PDCP_Delay_DL_ms"],
+                "delay_p95_ms": ["DRB_PdcpSduDelayDl", "UE_PDCP_Delay_DL_ms"],
+                "UE_DRB_PdcpSduDelayDl_UEID": ["UE_PDCP_Delay_DL_ms"],
+            }
+            
+            alternatives = metric_alternatives.get(metric, [])
+            for alt in alternatives:
+                if prev_val is None:
+                    prev_val = prev_cell.get(alt)
+                if curr_val is None:
+                    curr_val = curr_cell.get(alt)
+                if prev_val is not None and curr_val is not None:
+                    if should_log(LOG_REWARD):
+                        logger.debug(f"[REWARD] Using alternative metric name: {alt} (requested: {metric})")
+                    break
+        
+        # If either value is still missing, log diagnostic info and return neutral reward
+        if prev_val is None or curr_val is None:
+            if should_log(LOG_REWARD):
+                available_metrics = sorted(set(list(prev_cell.keys()) + list(curr_cell.keys())))
+                logger.warning(f"[REWARD] Metric '{metric}' not found in CellMetrics. Available metrics: {available_metrics[:10]}...")
+                logger.warning(f"[REWARD] prev_kpi CellMetrics keys: {list(prev_cell.keys())[:10]}")
+                logger.warning(f"[REWARD] curr_kpi CellMetrics keys: {list(curr_cell.keys())[:10]}")
+            return 0.0
+        
+        # Check for NaN values
+        if np.isnan(prev_val) or np.isnan(curr_val):
+            if should_log(LOG_REWARD):
+                logger.warning(f"[REWARD] Metric '{metric}' has NaN values: prev={prev_val}, curr={curr_val}")
             return 0.0
         
         prev = float(prev_val)
         curr = float(curr_val)
+        
+        # Ensure values are not normalized (they should be raw values)
+        # Normalization only happens in feature extraction, not in reward calculation
 
         if direction == "lower_better":
             delta_raw = (prev - curr)
@@ -373,26 +555,290 @@ class RLObserver:
         r -= self.intent.action_cost * float(actions_len)
         r -= violation  # penalty if target not met
         clip = self.intent.reward_clip
-        return float(np.clip(r, -clip, clip))
+        reward = float(np.clip(r, -clip, clip))
+        
+        if should_log(LOG_REWARD):
+            logger.info(f"[REWARD] metric={metric}, prev={prev:.4f}, curr={curr:.4f}, target={target:.4f}, "
+                       f"delta_rel={delta_rel:.4f}, violation={violation}, actions={actions_len}, reward={reward:.4f}")
+            # Additional diagnostic: show if values are changing
+            if abs(prev - curr) < 1e-6:
+                logger.warning(f"[REWARD] WARNING: Metric value not changing! prev={prev:.6f}, curr={curr:.6f} (diff={abs(prev-curr):.9f})")
+        
+        return reward
 
     def _compute_enhanced_reward(self, prev_kpi: Dict, curr_kpi: Dict, 
                                last_playbook: Any) -> float:
-        """Enhanced reward computation with contextual bonus."""
-        # Get base reward
+        """Enhanced reward computation with contextual bonus and optional multi-metric support."""
         actions_len = len(getattr(last_playbook, "actions", []))
-        base_reward = self._compute_reward(prev_kpi, curr_kpi, actions_len)
+        
+        # Extract metrics for reward calculation
+        prev_metrics = self._extract_metrics_dict(prev_kpi)
+        curr_metrics = self._extract_metrics_dict(curr_kpi)
+        
+        # CRITICAL: Save last_metric_values BEFORE updating it
+        # We need to use the PREVIOUS state for merging, not the updated state
+        # Otherwise, if we update last_metric_values from curr_metrics first, then use it for prev,
+        # we'll make prev=curr when metrics are fragmented
+        saved_last_metric_values = self.last_metric_values.copy()
+        
+        # Merge metrics from both KPIs to handle fragmented KPIs
+        # Fragmented KPIs may have different metrics in prev vs curr, so we need to merge them
+        # Strategy: 
+        # 1. Get all unique metrics from both KPIs (union of all metrics)
+        # 2. For each metric:
+        #    - prev: use prev_kpi value if available, otherwise SAVED last known value (from BEFORE this step)
+        #    - curr: use curr_kpi value if available, otherwise SAVED last known value (from BEFORE this step)
+        # 3. This ensures we compare the same set of metrics while preserving actual differences
+        
+        # Get all unique metrics from both KPIs
+        all_metrics = set(list(prev_metrics.keys()) + list(curr_metrics.keys()))
+        
+        merged_prev_metrics = {}
+        merged_curr_metrics = {}
+        
+        for metric in all_metrics:
+            # For prev: use prev_kpi value if available, otherwise SAVED last known value
+            # Use saved_last_metric_values (from before this step) to avoid using curr values
+            if metric in prev_metrics and not np.isnan(prev_metrics[metric]):
+                merged_prev_metrics[metric] = prev_metrics[metric]
+            elif metric in saved_last_metric_values and not np.isnan(saved_last_metric_values[metric]):
+                merged_prev_metrics[metric] = saved_last_metric_values[metric]
+                if should_log(LOG_REWARD):
+                    logger.debug(f"[REWARD] Using saved last known value for prev {metric}: {saved_last_metric_values[metric]:.4f} (not in prev_kpi)")
+            
+            # For curr: use curr_kpi value if available, otherwise SAVED last known value
+            # Use saved_last_metric_values (from before this step) to avoid using prev values
+            if metric in curr_metrics and not np.isnan(curr_metrics[metric]):
+                merged_curr_metrics[metric] = curr_metrics[metric]
+            elif metric in saved_last_metric_values and not np.isnan(saved_last_metric_values[metric]):
+                merged_curr_metrics[metric] = saved_last_metric_values[metric]
+                if should_log(LOG_REWARD):
+                    logger.debug(f"[REWARD] Using saved last known value for curr {metric}: {saved_last_metric_values[metric]:.4f} (not in curr_kpi)")
+        
+        # NOW update last_metric_values AFTER merging (for next iteration)
+        for metric, value in curr_metrics.items():
+            if not np.isnan(value):
+                self.last_metric_values[metric] = value
+        
+        # Also update from prev_metrics (in case curr is missing it)
+        for metric, value in prev_metrics.items():
+            if not np.isnan(value):
+                self.last_metric_values[metric] = value
+        
+        # Use merged metrics for reward calculation
+        prev_metrics = merged_prev_metrics
+        curr_metrics = merged_curr_metrics
+        
+        if should_log(LOG_REWARD):
+            logger.info(f"[REWARD] Computing reward: enable_multi_metric={self.enable_multi_metric_reward}, "
+                       f"has_slo_config={self.slo_config is not None}, "
+                       f"actions_len={actions_len}")
+            logger.info(f"[REWARD] Available metrics in prev: {list(prev_metrics.keys())}")
+            logger.info(f"[REWARD] Available metrics in curr: {list(curr_metrics.keys())}")
+            logger.info(f"[REWARD] Intent metric: {self.intent.metric}, target: {self.intent.target}")
+            # Show actual CellMetrics keys for debugging
+            prev_cell_keys = list(prev_kpi.get("CellMetrics", {}).keys())
+            curr_cell_keys = list(curr_kpi.get("CellMetrics", {}).keys())
+            logger.info(f"[REWARD] CellMetrics keys in prev: {prev_cell_keys[:10]}")
+            logger.info(f"[REWARD] CellMetrics keys in curr: {curr_cell_keys[:10]}")
+        
+        # Try multi-metric reward if enabled and SLO config available
+        if self.enable_multi_metric_reward and self.slo_config and hasattr(self.slo_config, 'slos'):
+            try:
+                # Build SLO targets dict for multi-metric reward
+                slo_targets = {}
+                for metric, slo in self.slo_config.slos.items():
+                    slo_targets[metric] = {
+                        'target': slo['target'],
+                        'direction': slo['direction'],
+                        'weight': 1.0 if slo.get('priority') == 'high' else 0.5 if slo.get('priority') == 'medium' else 0.25
+                    }
+                
+                if should_log(LOG_REWARD):
+                    logger.info(f"[REWARD] Using multi-metric reward calculation with {len(slo_targets)} SLO metrics")
+                    for metric, config in slo_targets.items():
+                        prev_val = prev_metrics.get(metric, "N/A")
+                        curr_val = curr_metrics.get(metric, "N/A")
+                        logger.info(f"[REWARD]   {metric}: prev={prev_val}, curr={curr_val}, target={config['target']}, weight={config['weight']}")
+                
+                # Calculate multi-metric reward
+                multi_reward = self.slo_reward_calculator.calculate_multi_metric_reward(
+                    prev_metrics=prev_metrics,
+                    curr_metrics=curr_metrics,
+                    slo_targets=slo_targets
+                )
+                
+                if should_log(LOG_REWARD):
+                    logger.info(f"[REWARD] Multi-metric reward (before action cost): {multi_reward:.6f}")
+                
+                # Apply action cost and clip
+                # UNCLAMPING: Widen clip range from 2.0 to 20.0 to fix saturation/vanishing gradient
+                # This allows the agent to distinguish between -7.0 (bad) and -6.0 (slightly better)
+                action_penalty = self.intent.action_cost * float(actions_len)
+                multi_reward -= action_penalty
+                multi_reward = float(np.clip(multi_reward, -20.0, 20.0))
+                
+                if should_log(LOG_REWARD):
+                    logger.info(f"[REWARD] Multi-metric reward (after action cost {action_penalty:.4f}): {multi_reward:.6f}")
+                
+                # Calculate violations and track which metrics were used
+                violations = []
+                metrics_used = []
+                metrics_missing = []
+                for metric, slo in self.slo_config.slos.items():
+                    try:
+                        # Use merged prev_metrics (which includes last known values)
+                        prev_val = prev_metrics.get(metric)
+                        curr_val = curr_metrics.get(metric)
+                        
+                        # If curr is missing, try to use last known value
+                        if curr_val is None or (isinstance(curr_val, float) and np.isnan(curr_val)):
+                            curr_val = self.last_metric_values.get(metric)
+                        
+                        if prev_val is None or curr_val is None:
+                            metrics_missing.append(metric)
+                            continue
+                        if isinstance(prev_val, float) and np.isnan(prev_val):
+                            metrics_missing.append(metric)
+                            continue
+                        if isinstance(curr_val, float) and np.isnan(curr_val):
+                            metrics_missing.append(metric)
+                            continue
+                        
+                        # Format metrics_used string safely
+                        try:
+                            metrics_used_str = f"{metric}(prev={prev_val:.2f},curr={curr_val:.2f})"
+                        except (ValueError, TypeError):
+                            metrics_used_str = f"{metric}(prev={prev_val},curr={curr_val})"
+                        metrics_used.append(metrics_used_str)
+                        
+                        value = float(curr_val)
+                        target = float(slo['target'])
+                        direction = slo['direction']
+                        is_violating = False
+                        if direction == "lower_better" and value > target:
+                            is_violating = True
+                        elif direction == "higher_better" and value < target:
+                            is_violating = True
+                        elif direction == "moderate_better":
+                            # For moderate_better, violation is being far from target in either direction
+                            distance = abs(value - target)
+                            tolerance = slo.get('tolerance', 0.1) * target  # tolerance is relative
+                            if distance > tolerance:
+                                is_violating = True
+                        if is_violating:
+                            try:
+                                violations.append(f"{metric}={value:.2f} (target={target:.2f})")
+                            except Exception:
+                                violations.append(f"{metric}={value} (target={target})")
+                    except Exception as e:
+                        # Skip this metric if there's an error processing it
+                        logger.debug(f"[REWARD] Error processing metric {metric} for violation tracking: {e}")
+                        continue
+                
+                if should_log(LOG_REWARD):
+                    # Calculate weight_sum safely
+                    try:
+                        used_metric_names = [m.split('(')[0] for m in metrics_used if '(' in m]
+                        weight_sum_actual = sum(slo_targets.get(m, {}).get('weight', 1.0) for m in used_metric_names if m in slo_targets)
+                    except Exception as e:
+                        weight_sum_actual = 0.0
+                        logger.debug(f"[REWARD] Error calculating weight_sum: {e}")
+                    
+                    logger.info(f"[REWARD] Multi-metric reward: {multi_reward:.4f}, "
+                               f"metrics_used={len(metrics_used)}/{len(self.slo_config.slos)}, "
+                               f"weight_sum={weight_sum_actual:.2f}")
+                    if metrics_used:
+                        logger.info(f"[REWARD]   Metrics used: {', '.join(metrics_used[:5])}")
+                    if metrics_missing:
+                        logger.warning(f"[REWARD]   Metrics missing: {', '.join(metrics_missing)}")
+                    if violations:
+                        logger.info(f"[REWARD]   Violations: {', '.join(violations)}")
+                    else:
+                        logger.info(f"[REWARD]   All tracked SLOs met")
+                
+                # Add contextual bonus if available
+                if self.enable_contextual_bandit and self.current_context:
+                    context_bonus = self._calculate_context_bonus(last_playbook, self.current_context)
+                    multi_reward += context_bonus
+                    multi_reward = float(np.clip(multi_reward, -self.intent.reward_clip, self.intent.reward_clip))
+                    if should_log(LOG_REWARD) and context_bonus != 0:
+                        logger.debug(f"[REWARD] Added context bonus: {context_bonus:.4f}, final reward: {multi_reward:.4f}")
+                
+                return multi_reward
+                
+            except Exception as e:
+                if should_log(LOG_REWARD):
+                    import traceback
+                    logger.warning(f"[REWARD] Multi-metric reward calculation failed: {e}, falling back to single metric")
+                    logger.debug(f"[REWARD] Exception traceback: {traceback.format_exc()}")
+                # Fall through to single-metric calculation
+        
+        # Fallback to single-metric reward
+        if should_log(LOG_REWARD):
+            logger.warning(f"[REWARD] Using single-metric reward (fallback). "
+                          f"enable_multi_metric={self.enable_multi_metric_reward}, "
+                          f"has_slo_config={self.slo_config is not None}")
+        # Use merged metrics for base reward calculation (handles fragmentation)
+        metric = self.intent.metric
+        target = self.intent.target
+        direction = self.intent.direction
+        
+        # Get values from merged metrics (which include history fill)
+        prev_val = prev_metrics.get(metric)
+        curr_val = curr_metrics.get(metric)
+        
+        # Fallback to alternative names if primary metric not found
+        if prev_val is None or curr_val is None:
+            metric_alternatives = {
+                "DRB_PdcpSduDelayDl": ["delay_p95_ms", "UE_PDCP_Delay_DL_ms"],
+                "delay_p95_ms": ["DRB_PdcpSduDelayDl", "UE_PDCP_Delay_DL_ms"],
+                "UE_DRB_PdcpSduDelayDl_UEID": ["UE_PDCP_Delay_DL_ms"],
+            }
+            alternatives = metric_alternatives.get(metric, [])
+            for alt in alternatives:
+                if prev_val is None: prev_val = prev_metrics.get(alt)
+                if curr_val is None: curr_val = curr_metrics.get(alt)
+        
+        # Calculate base reward
+        if prev_val is not None and curr_val is not None and not np.isnan(prev_val) and not np.isnan(curr_val):
+            prev = float(prev_val)
+            curr = float(curr_val)
+            
+            if direction == "lower_better":
+                delta_raw = (prev - curr)
+                delta_rel = delta_raw / max(abs(prev), 1e-6)
+                violation = 1.0 if curr > target else 0.0
+            else:  # higher_better
+                delta_raw = (curr - prev)
+                delta_rel = delta_raw / max(abs(prev), 1e-6)
+                violation = 1.0 if curr < target else 0.0
+
+            r = delta_rel
+            r -= self.intent.action_cost * float(actions_len)
+            r -= violation
+            clip = self.intent.reward_clip
+            base_reward = float(np.clip(r, -clip, clip))
+            
+            if should_log(LOG_REWARD):
+                logger.info(f"[REWARD] Base reward (derived from merged metrics): metric={metric}, "
+                           f"prev={prev:.4f}, curr={curr:.4f}, target={target:.4f}, "
+                           f"delta_rel={delta_rel:.4f}, reward={base_reward:.4f}")
+        else:
+            base_reward = 0.0
+            if should_log(LOG_REWARD):
+                 logger.warning(f"[REWARD] Metric '{metric}' missing in merged metrics (prev={prev_val}, curr={curr_val}), returning 0.0")
         
         if not self.enable_contextual_bandit or not self.current_context:
+            if should_log(LOG_REWARD):
+                logger.info(f"[REWARD] Returning base reward (no contextual bandit): {base_reward:.6f}")
             return base_reward
         
         # Calculate contextual bonus
         context_bonus = self._calculate_context_bonus(last_playbook, self.current_context)
         
-        # Alternative: Use SLO reward calculator
+        # Use SLO reward calculator for single metric
         try:
-            prev_metrics = self._extract_metrics_dict(prev_kpi)
-            curr_metrics = self._extract_metrics_dict(curr_kpi)
-            
             enhanced_reward = self.slo_reward_calculator.calculate_contextual_reward(
                 prev_metrics=prev_metrics,
                 curr_metrics=curr_metrics,
@@ -401,16 +847,28 @@ class RLObserver:
                 context_bonus=context_bonus
             )
             
+            if should_log(LOG_REWARD):
+                logger.debug(f"[REWARD] Enhanced reward: base={base_reward:.4f}, context_bonus={context_bonus:.4f}, "
+                            f"enhanced={enhanced_reward:.4f}, actions={actions_len}")
+            
             return enhanced_reward
             
         except Exception as e:
-            print(f"[Observer] Enhanced reward calculation failed: {e}")
+            if should_log(LOG_REWARD):
+                logger.warning(f"[REWARD] Enhanced reward calculation failed: {e}, using base_reward + context_bonus")
             return base_reward + context_bonus
 
     # ---------- Public API ----------
-    def step(self, last_playbook) -> Optional[np.ndarray]:
+    def step(self, last_playbook, kpi_dict: Optional[Dict] = None) -> Optional[np.ndarray]:
         """Enhanced step with contextual intelligence and feature completeness checking."""
-        kpi = self._read_latest_kpi()
+        import time
+        start_time = time.time()
+        
+        if kpi_dict is not None:
+             kpi = kpi_dict
+        else:
+             kpi = self._read_latest_kpi()
+        
         if kpi is None:
             return None
 
@@ -418,11 +876,35 @@ class RLObserver:
         row, completeness = self._extract_features_row(kpi)
         
         # Check if we have enough features to proceed
-        if completeness < self.min_feature_completeness:
-            # Not enough features - skip this step but still update buffer with NaN values
-            # This allows the window to accumulate data over time
+        # RELAXATION: If we have the target metric (critical for reward), proceed even if completeness is low
+        # This matches the logic in ObserverBridge to prevent stalling
+        cell_metrics = kpi.get("CellMetrics", {})
+        has_critical_metric = False
+        
+        # Check if intent metric is present (handling potential CSV name mapping)
+        if self.intent.metric in cell_metrics and cell_metrics[self.intent.metric] is not None:
+             has_critical_metric = True
+        else:
+             # Check potential alternatives for legacy/CSV compatibility
+             alternatives = {
+                 "DRB_PdcpSduDelayDl": ["delay_p95_ms", "UE_PDCP_Delay_DL_ms"],
+                 "UE_DRB_PdcpSduDelayDl_UEID": ["UE_PDCP_Delay_DL_ms"],
+             }.get(self.intent.metric, [])
+             
+             for alt in alternatives:
+                 if alt in cell_metrics and cell_metrics[alt] is not None:
+                     has_critical_metric = True
+                     break
+        
+        if completeness < self.min_feature_completeness and not has_critical_metric:
+            # Not enough features AND missing critical metric - skip this step
             self.buf.append(row)
+            if should_log(LOG_OBSERVER):
+                logger.debug(f"[OBSERVER] Skipping step: completeness={completeness:.1%} < min={self.min_feature_completeness:.1%} and critical metric {self.intent.metric} missing")
             return None  # Don't return state until we have enough features
+            
+        if should_log(LOG_OBSERVER) and completeness < self.min_feature_completeness and has_critical_metric:
+             logger.debug(f"[OBSERVER] Proceeding with low completeness ({completeness:.1%}) because critical metric {self.intent.metric} is present")
         
         # NEW: Extract context (only if we have enough features)
         if self.enable_contextual_bandit:
@@ -431,28 +913,59 @@ class RLObserver:
                 self.current_context = context
                 self._update_context_history(context)
 
-        s2 = self._update_window(row)  # [W, F]
+        s2 = self._update_window(row)  # [W, F] - already cleaned (no NaN values)
 
         # If we have a previous KPI, compute reward and push to replay
         if self.last_kpi_raw is not None and self.last_state_win is not None and last_playbook is not None:
             s = self.last_state_win  # previous window [W, F]
             
+            t0 = time.time()
             # Enhanced reward calculation
             if self.enable_contextual_bandit:
                 r = self._compute_enhanced_reward(self.last_kpi_raw, kpi, last_playbook)
             else:
                 r = self._compute_reward(self.last_kpi_raw, kpi, len(getattr(last_playbook, "actions", [])))
+            t_reward = time.time() - t0
             
+            t0 = time.time()
             p = self.predictor.encode_playbook_onehot(last_playbook)  # [K, D]
+            t_encode = time.time() - t0
 
             # Push transition to replay and learn
+            if should_log(LOG_REWARD):
+                logger.debug(f"[REWARD] Pushing experience: reward={r:.4f}, metric={self.intent.metric}, "
+                            f"prev_val={self.last_kpi_raw.get('CellMetrics', {}).get(self.intent.metric, 'N/A')}, "
+                            f"curr_val={kpi.get('CellMetrics', {}).get(self.intent.metric, 'N/A')}, "
+                            f"replay_size={len(self.predictor.replay)}")
+            
+            t0 = time.time()
             self.predictor.replay.push(s, p, r, s2, False)
-            self.predictor.learn_step()
+            t_push = time.time() - t0
+            
+            t0 = time.time()
+            # OPTIMIZATION: Only train every 10 steps to prevent CPU bottleneck
+            # The 'learn' step takes ~0.2-0.7s, which causes lag if run every step (1Hz+)
+            # Using replay buffer size as a proxy for step count ensures we space out training
+            if len(self.predictor.replay) % 10 == 0:
+                self.predictor.learn_step()
+            t_learn = time.time() - t0
+            
+            # Log slow operations (adjusted threshold for learn since we expect it to be slower when it runs)
+            if t_reward > 0.1 or t_encode > 0.1 or t_push > 0.1 or t_learn > 0.1:
+                logger.warning(f"[PERF] Slow step detected: reward={t_reward:.4f}s, encode={t_encode:.4f}s, push={t_push:.4f}s, learn={t_learn:.4f}s")
 
         # Update previous pointers
-        self.last_kpi_raw = kpi
-
-        return s2  # current window
+        # CRITICAL: Make a deep copy of the KPI dict to avoid reference issues
+        # If we store a reference, modifications to the dict will affect both prev and curr
+        from copy import deepcopy
+        self.last_kpi_raw = deepcopy(kpi)
+        self.last_state_win = s2.copy()  # Store cleaned state window
+        
+        total_time = time.time() - start_time
+        if total_time > 0.5:
+             logger.warning(f"[PERF] Total step time: {total_time:.4f}s")
+             
+        return s2  # current window (cleaned, no NaN)
 
     # ---------- NEW: Public context access methods ----------
     def get_current_context(self) -> Optional[NetworkContext]:

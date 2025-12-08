@@ -20,6 +20,7 @@ import signal
 import struct
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone
@@ -44,6 +45,12 @@ from ain.agents.observer_agent import RLObserverAgent
 from ain.agents.actor_agent import ActorAgent
 
 import logging
+from ain.common.log_config import (
+    set_log_levels, parse_log_levels, should_log, log_if_enabled,
+    LOG_LEARNING, LOG_INTENT, LOG_SCORING, LOG_DEVIATION, LOG_OBSERVER, LOG_REWARD, LOG_KPI,
+    CATEGORY_NAMES
+)
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -75,52 +82,48 @@ class XAppKPIAdapter:
                 ue_metric["ue_id"] = str(ue_id)
                 ue_metric["cell_id"] = ue.get("cell_id") or ue.get("cellId") or cell_metrics.get("cell_id", "unknown")
                 
-                # Extract UE-specific metrics - USE ACTUAL METRIC NAMES
-                # UE LEVEL: UE_PDCP_Delay_DL_ms, DRB_EstabSucc_5QI_UEID, TB_TotNbrDlInitial_Qpsk_UEID, 
-                #           TB_TotNbrDlInitial_64Qam_UEID, UE_PRB_Used_DL, UE_Throughput_DL_Mbps
+                # Extract UE-specific metrics from raw fields if available (backward compatibility)
+                # But prefer measurements array which has the correct names
+                # These checks are for backward compatibility with old format
                 if "UE_PDCP_Delay_DL_ms" in ue:
-                    ue_metric["UE_PDCP_Delay_DL_ms"] = float(ue["UE_PDCP_Delay_DL_ms"])
+                    ue_metric["UE_DRB_PdcpSduDelayDl_UEID"] = float(ue["UE_PDCP_Delay_DL_ms"])
                 if "DRB_EstabSucc_5QI_UEID" in ue:
-                    ue_metric["DRB_EstabSucc_5QI_UEID"] = float(ue["DRB_EstabSucc_5QI_UEID"])
+                    ue_metric["UE_DRB_EstabSucc_5QI_UEID"] = float(ue["DRB_EstabSucc_5QI_UEID"])
                 if "TB_TotNbrDlInitial_Qpsk_UEID" in ue:
-                    ue_metric["TB_TotNbrDlInitial_Qpsk_UEID"] = int(ue["TB_TotNbrDlInitial_Qpsk_UEID"])
+                    ue_metric["UE_TB_TotNbrDlInitial_Qpsk_UEID"] = int(ue["TB_TotNbrDlInitial_Qpsk_UEID"])
                 if "TB_TotNbrDlInitial_64Qam_UEID" in ue:
-                    ue_metric["TB_TotNbrDlInitial_64Qam_UEID"] = int(ue["TB_TotNbrDlInitial_64Qam_UEID"])
+                    ue_metric["UE_TB_TotNbrDlInitial_64Qam_UEID"] = int(ue["TB_TotNbrDlInitial_64Qam_UEID"])
                 if "UE_PRB_Used_DL" in ue:
-                    ue_metric["UE_PRB_Used_DL"] = float(ue["UE_PRB_Used_DL"])
+                    ue_metric["UE_RRU_PrbUsedDl_UEID"] = float(ue["UE_PRB_Used_DL"])
                 if "UE_Throughput_DL_Mbps" in ue:
-                    ue_metric["UE_Throughput_DL_Mbps"] = float(ue["UE_Throughput_DL_Mbps"])
-                if "UE_Throughput_DL_Mbps" in ue:
-                    ue_metric["thr_dl_bps"] = float(ue["UE_Throughput_DL_Mbps"]) * 1e6
-                if "UE_PRB_Used_DL" in ue:
-                    ue_metric["prb_used_dl"] = float(ue["UE_PRB_Used_DL"])
+                    ue_metric["UE_DRB_UEThpDl_UEID"] = float(ue["UE_Throughput_DL_Mbps"]) * 1e6  # Convert Mbps to bps
                 
                 # Extract from nested measurements if available
+                # Map to actual CSV column names: UE_DRB_PdcpSduDelayDl_UEID, UE_DRB_UEThpDl_UEID, etc.
                 ue_measurements = ue.get("measurements", [])
                 for m in ue_measurements:
-                    name = m.get("name", "").lower()
+                    name = m.get("name", "")
                     value = m.get("value", 0)
-                    if "delay" in name or "latency" in name:
-                        ue_metric["delay_p95_ms"] = float(value)
-                    elif "throughput" in name or "thr" in name:
-                        if "dl" in name:
-                            ue_metric["thr_dl_bps"] = float(value) * 1e6
-                        elif "ul" in name:
-                            ue_metric["thr_ul_bps"] = float(value) * 1e6
-                    elif "prb" in name and "used" in name:
-                        ue_metric["prb_used_dl"] = float(value)
-                    elif "bler" in name:
-                        if "dl" in name:
-                            ue_metric["bler_dl"] = float(value) / 100.0
-                        elif "ul" in name:
-                            ue_metric["bler_ul"] = float(value) / 100.0
-                    elif "cqi" in name:
-                        ue_metric["cqi_avg"] = float(value)
-                    elif "mcs" in name:
-                        if "dl" in name:
-                            ue_metric["mcs_dl_avg"] = int(value)
-                        elif "ul" in name:
-                            ue_metric["mcs_ul_avg"] = int(value)
+                    # Convert dot notation to underscores for matching
+                    name_normalized = name.replace('.', '_').lower()
+                    
+                    # Map to actual CSV column names
+                    if "drb_pdcpsdudelaydl_ueid" in name_normalized or ("delay" in name_normalized and "pdcp" in name_normalized and "ue" in name_normalized):
+                        ue_metric["UE_DRB_PdcpSduDelayDl_UEID"] = float(value)
+                    elif "drb_uethpdl_ueid" in name_normalized or ("throughput" in name_normalized and "ue" in name_normalized and "dl" in name_normalized):
+                        ue_metric["UE_DRB_UEThpDl_UEID"] = float(value) * 1e6  # Convert Mbps to bps if needed
+                    elif "rru_prbuseddl_ueid" in name_normalized or ("prb" in name_normalized and "used" in name_normalized and "ue" in name_normalized):
+                        ue_metric["UE_RRU_PrbUsedDl_UEID"] = float(value)
+                    elif "drb_blerdl_ueid" in name_normalized or ("bler" in name_normalized and "dl" in name_normalized and "ue" in name_normalized):
+                        ue_metric["UE_DRB_BlerDl_UEID"] = float(value)
+                    elif "drb_estabsucc_5qi_ueid" in name_normalized or ("estab" in name_normalized and "succ" in name_normalized and "ue" in name_normalized):
+                        ue_metric["UE_DRB_EstabSucc_5QI_UEID"] = float(value)
+                    elif "tb_totnbrdlinitial_qpsk_ueid" in name_normalized:
+                        ue_metric["UE_TB_TotNbrDlInitial_Qpsk_UEID"] = int(value)
+                    elif "tb_totnbrdlinitial_16qam_ueid" in name_normalized:
+                        ue_metric["UE_TB_TotNbrDlInitial_16Qam_UEID"] = int(value)
+                    elif "tb_totnbrdlinitial_64qam_ueid" in name_normalized:
+                        ue_metric["UE_TB_TotNbrDlInitial_64Qam_UEID"] = int(value)
                 
                 if ue_metric:
                     ue_metrics.append(ue_metric)
@@ -129,10 +132,23 @@ class XAppKPIAdapter:
             for m in measurements:
                 name = m.get("name", "")
                 value = m.get("value", 0)
+                # Convert dot notation to underscores for matching
+                name_normalized = name.replace('.', '_').lower()
                 
-                # Map xApp measurement names to actual metric names
-                if "UE_PDCP_Delay_DL_ms" in name or ("delay" in name.lower() and "pdcp" in name.lower()):
-                    cell_metrics["UE_PDCP_Delay_DL_ms"] = float(value)
+                # Map xApp measurement names to actual CSV column names
+                # gNB level: DRB_PdcpSduDelayDl, RRU_PrbUsedDl, DRB_MeanActiveUeDl, etc.
+                if "drb_pdcpsdudelaydl" in name_normalized and "ueid" not in name_normalized:
+                    cell_metrics["DRB_PdcpSduDelayDl"] = float(value)
+                elif "rru_prbuseddl" in name_normalized or ("prb" in name_normalized and "used" in name_normalized and "dl" in name_normalized):
+                    cell_metrics["RRU_PrbUsedDl"] = float(value)
+                elif "drb_meanactiveuedl" in name_normalized or ("mean" in name_normalized and "active" in name_normalized and "ue" in name_normalized):
+                    cell_metrics["DRB_MeanActiveUeDl"] = float(value)
+                elif "tb_totnbrdlinitial_qpsk" in name_normalized:
+                    cell_metrics["TB_TotNbrDlInitial_Qpsk"] = int(value)
+                elif "tb_totnbrdlinitial_16qam" in name_normalized:
+                    cell_metrics["TB_TotNbrDlInitial_16Qam"] = int(value)
+                elif "tb_totnbrdlinitial_64qam" in name_normalized:
+                    cell_metrics["TB_TotNbrDlInitial_64Qam"] = int(value)
                 elif "throughput" in name.lower() or "thr" in name.lower():
                     if "dl" in name.lower():
                         cell_metrics["thr_dl_bps"] = float(value) * 1e6
@@ -161,20 +177,21 @@ class XAppKPIAdapter:
                 elif "DL_TB_64QAM_Count" in name:
                     cell_metrics["DL_TB_64QAM_Count"] = int(value)
         
-        # Extract from raw fields if available - USE ACTUAL METRIC NAMES
-        # GNB LEVEL: UE_PDCP_Delay_DL_ms, DL_TB_QPSK_Count, DL_TB_64QAM_Count, PRB_Used_DL, Mean_Active_UEs_DL
+        # Extract from raw fields if available (backward compatibility)
+        # Map old names to new CSV column names
         if "UE_PDCP_Delay_DL_ms" in kpi_data:
-            cell_metrics["UE_PDCP_Delay_DL_ms"] = float(kpi_data["UE_PDCP_Delay_DL_ms"])
+            cell_metrics["DRB_PdcpSduDelayDl"] = float(kpi_data["UE_PDCP_Delay_DL_ms"])
         if "PRB_Used_DL" in kpi_data:
-            cell_metrics["PRB_Used_DL"] = float(kpi_data["PRB_Used_DL"])
+            cell_metrics["RRU_PrbUsedDl"] = float(kpi_data["PRB_Used_DL"])
         if "PRB_Total_DL" in kpi_data or "PRB_Available_DL" in kpi_data:
-            cell_metrics["PRB_Total_DL"] = float(kpi_data.get("PRB_Total_DL", kpi_data.get("PRB_Available_DL", 0)))
+            # Store as RRU_PrbUsedDl if we need total, but typically we just use RRU_PrbUsedDl
+            pass  # PRB total not in feature list
         if "Mean_Active_UEs_DL" in kpi_data:
-            cell_metrics["Mean_Active_UEs_DL"] = int(kpi_data["Mean_Active_UEs_DL"])
+            cell_metrics["DRB_MeanActiveUeDl"] = int(kpi_data["Mean_Active_UEs_DL"])
         if "DL_TB_QPSK_Count" in kpi_data:
-            cell_metrics["DL_TB_QPSK_Count"] = int(kpi_data["DL_TB_QPSK_Count"])
+            cell_metrics["TB_TotNbrDlInitial_Qpsk"] = int(kpi_data["DL_TB_QPSK_Count"])
         if "DL_TB_64QAM_Count" in kpi_data:
-            cell_metrics["DL_TB_64QAM_Count"] = int(kpi_data["DL_TB_64QAM_Count"])
+            cell_metrics["TB_TotNbrDlInitial_64Qam"] = int(kpi_data["DL_TB_64QAM_Count"])
         
         # Compute PRB_Used_DL_ratio if we have both values
         if "PRB_Used_DL" in cell_metrics and "PRB_Total_DL" not in cell_metrics:
@@ -421,19 +438,60 @@ class XAppTCPServer:
         else:
             self.kpi_csv_file = Path(kpi_csv_file)
         self.kpi_csv_initialized = False
+        self.kpi_csv_fieldnames = None  # Cached fieldnames to avoid reading file every time
+        self.kpi_csv_lock = threading.Lock()  # Lock for thread-safe CSV operations
+        self.kpi_csv_rewrite_pending = False  # Flag to track if rewrite is in progress
+        self.kpi_csv_write_count = 0  # Counter for periodic flushing
+        self.KPI_CSV_FLUSH_INTERVAL = 10  # Flush every 10 writes
         self._init_kpi_csv()
     
     def _init_kpi_csv(self):
         """Initialize KPI CSV file with base headers if it doesn't exist."""
+        base_fieldnames = ['timestamp', 'meid', 'cell_id', 'node_id', 'format']
         if not self.kpi_csv_file.exists():
             with open(self.kpi_csv_file, 'w', newline='') as f:
                 writer = csv.writer(f)
                 # Only write base columns - measurement columns will be added dynamically
-                writer.writerow(['timestamp', 'meid', 'cell_id', 'node_id', 'format'])
+                writer.writerow(base_fieldnames)
+            self.kpi_csv_fieldnames = base_fieldnames
             self.kpi_csv_initialized = True
             logger.info(f"Initialized KPI CSV file: {self.kpi_csv_file}")
         else:
+            # Cache existing fieldnames to avoid reading file every time
+            try:
+                with open(self.kpi_csv_file, 'r') as f:
+                    reader = csv.DictReader(f)
+                    self.kpi_csv_fieldnames = list(reader.fieldnames) if reader.fieldnames else base_fieldnames
+            except Exception as e:
+                logger.warning(f"Could not read existing CSV fieldnames: {e}, using defaults")
+                self.kpi_csv_fieldnames = base_fieldnames
             self.kpi_csv_initialized = True
+    
+    def _rewrite_csv_with_new_columns(self, new_fieldnames: List[str]):
+        """Background thread function to rewrite CSV with new columns (non-blocking)"""
+        try:
+            existing_rows = []
+            if self.kpi_csv_file.exists():
+                with open(self.kpi_csv_file, 'r') as f:
+                    reader = csv.DictReader(f)
+                    existing_rows = list(reader)
+            
+            # Rewrite file with new header
+            with open(self.kpi_csv_file, 'w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=new_fieldnames, extrasaction='ignore')
+                writer.writeheader()
+                for row in existing_rows:
+                    writer.writerow(row)
+            
+            # Update cached fieldnames
+            with self.kpi_csv_lock:
+                self.kpi_csv_fieldnames = new_fieldnames
+                self.kpi_csv_rewrite_pending = False
+            logger.debug(f"Completed CSV rewrite with {len(new_fieldnames)} columns")
+        except Exception as e:
+            logger.error(f"Error rewriting CSV: {e}", exc_info=True)
+            with self.kpi_csv_lock:
+                self.kpi_csv_rewrite_pending = False
     
     def _write_kpi_to_csv(self, kpi_data: Dict[str, Any], meid: str, cell_id: str, node_id: Optional[int] = None, is_ue_data: bool = False):
         """Write KPI data to CSV file with dynamic column handling.
@@ -472,61 +530,58 @@ class XAppTCPServer:
                     csv_name = f"UE_{csv_name}"
                 metrics[csv_name] = value
             
-            # Check if we need to add new columns to CSV
-            # Read existing file to get current fieldnames
-            existing_fieldnames = []
-            if self.kpi_csv_file.exists():
-                with open(self.kpi_csv_file, 'r') as f:
-                    reader = csv.DictReader(f)
-                    existing_fieldnames = list(reader.fieldnames) if reader.fieldnames else []
-            
-            # Base fieldnames (always present)
-            base_fieldnames = ['timestamp', 'meid', 'cell_id', 'node_id', 'format']
-            
-            # Get all metric names (from existing file + new metrics)
-            all_metric_names = set()
-            if existing_fieldnames:
-                # Get metric columns (everything except base columns)
-                all_metric_names = set(existing_fieldnames) - set(base_fieldnames)
-            
-            # Add new metric names
-            all_metric_names.update(metrics.keys())
-            
-            # Sort metric names for consistent column order
-            sorted_metric_names = sorted(all_metric_names)
-            fieldnames = base_fieldnames + sorted_metric_names
-            
-            # If we have new columns, rewrite the file with new header
-            if set(fieldnames) != set(existing_fieldnames or base_fieldnames):
-                # Read all existing rows
-                existing_rows = []
-                if self.kpi_csv_file.exists() and existing_fieldnames:
-                    with open(self.kpi_csv_file, 'r') as f:
-                        reader = csv.DictReader(f)
-                        existing_rows = list(reader)
+            # Use cached fieldnames (avoid reading file every time)
+            with self.kpi_csv_lock:
+                base_fieldnames = ['timestamp', 'meid', 'cell_id', 'node_id', 'format']
+                existing_fieldnames = self.kpi_csv_fieldnames or base_fieldnames
                 
-                # Rewrite file with new header
-                with open(self.kpi_csv_file, 'w', newline='') as f:
-                    writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
-                    writer.writeheader()
-                    for row in existing_rows:
-                        writer.writerow(row)
+                # Get all metric names (from cached fieldnames + new metrics)
+                all_metric_names = set()
+                if existing_fieldnames:
+                    # Get metric columns (everything except base columns)
+                    all_metric_names = set(existing_fieldnames) - set(base_fieldnames)
+                
+                # Add new metric names
+                all_metric_names.update(metrics.keys())
+                
+                # Sort metric names for consistent column order
+                sorted_metric_names = sorted(all_metric_names)
+                fieldnames = base_fieldnames + sorted_metric_names
+                
+                # If we have new columns, start background rewrite
+                if set(fieldnames) != set(existing_fieldnames):
+                    if not self.kpi_csv_rewrite_pending:
+                        self.kpi_csv_rewrite_pending = True
+                        # Start background thread for rewrite
+                        threading.Thread(
+                            target=self._rewrite_csv_with_new_columns,
+                            args=(fieldnames,),
+                            daemon=True
+                        ).start()
+                    # Update cached fieldnames immediately (rewrite will complete in background)
+                    self.kpi_csv_fieldnames = fieldnames
+                
+                # Write new row (extrasaction='ignore' will skip new columns until rewrite completes)
+                row = {
+                    'timestamp': timestamp,
+                    'meid': meid,
+                    'cell_id': cell_id,
+                    'node_id': node_id if node_id is not None else '',
+                    'format': kpi_data.get("format", "F1"),
+                }
+                
+                # Add all metrics
+                row.update(metrics)
             
-            # Write new row
-            row = {
-                'timestamp': timestamp,
-                'meid': meid,
-                'cell_id': cell_id,
-                'node_id': node_id if node_id is not None else '',
-                'format': kpi_data.get("format", "F1"),
-            }
-            
-            # Add all metrics
-            row.update(metrics)
-            
+            # Write to file (outside lock to minimize lock time, but fieldnames are already cached)
             with open(self.kpi_csv_file, 'a', newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+                writer = csv.DictWriter(f, fieldnames=self.kpi_csv_fieldnames, extrasaction='ignore')
                 writer.writerow(row)
+                
+                # Periodic flush to reduce I/O overhead
+                self.kpi_csv_write_count += 1
+                if self.kpi_csv_write_count % self.KPI_CSV_FLUSH_INTERVAL == 0:
+                    f.flush()
                 
         except Exception as e:
             logger.error(f"Error writing KPI to CSV: {e}", exc_info=True)
@@ -585,7 +640,8 @@ class XAppTCPServer:
                     message = json.loads(text)
                     
                     msg_type = message.get("type", "unknown")
-                    logger.info(f"Received {msg_type} message from {client_id}")
+                    if should_log(LOG_KPI):
+                        logger.info(f"[KPI] Received {msg_type} message from {client_id}")
                     
                     if msg_type == "kpi":
                         meid = message.get("meid", "unknown")
@@ -627,7 +683,8 @@ class XAppTCPServer:
                             self.client_node_map[client_id] = node_id
                             if cell_id != "unknown":
                                 self.cell_to_node_map[cell_id] = node_id
-                            logger.info(f"Extracted node_id={node_id} for cell_id={cell_id}, client={client_id}")
+                            if should_log(LOG_KPI):
+                                logger.info(f"[KPI] Extracted node_id={node_id} for cell_id={cell_id}, client={client_id}")
                         else:
                             # Try to infer node_id from cell_id pattern or use default
                             # If cell_id is numeric (like "1111"), try to infer node_id
@@ -638,7 +695,8 @@ class XAppTCPServer:
                                 if cell_id in self.cell_to_node_map:
                                     inferred_node_id = self.cell_to_node_map[cell_id]
                                     self.client_node_map[client_id] = inferred_node_id
-                                    logger.info(f"Using existing node_id={inferred_node_id} for cell_id={cell_id} from mapping")
+                                    if should_log(LOG_KPI):
+                                        logger.info(f"[KPI] Using existing node_id={inferred_node_id} for cell_id={cell_id} from mapping")
                                 # Try to infer from cell_id pattern (heuristic: extract first digit from numeric part)
                                 # Handle both "1111" and "CELL_1111" formats
                                 numeric_part = None
@@ -656,7 +714,8 @@ class XAppTCPServer:
                                     inferred_node_id = first_digit
                                     self.cell_to_node_map[cell_id] = inferred_node_id
                                     self.client_node_map[client_id] = inferred_node_id
-                                    logger.info(f"Inferred node_id={inferred_node_id} for cell_id={cell_id} (extracted from first digit of numeric part '{numeric_part}')")
+                                    if should_log(LOG_KPI):
+                                        logger.info(f"[KPI] Inferred node_id={inferred_node_id} for cell_id={cell_id} (extracted from first digit of numeric part '{numeric_part}')")
                                 else:
                                     logger.warning(f"No node_id found in KPI for cell_id={cell_id}, client={client_id}. Available mappings: {list(self.cell_to_node_map.keys())}")
                             else:
@@ -678,7 +737,8 @@ class XAppTCPServer:
                                 if ue_node_id is not None:
                                     ue_node_id = int(ue_node_id)
                                     self.ue_to_node_map[ue_id] = ue_node_id
-                                    logger.info(f"Extracted UE node_id={ue_node_id} for UE {ue_id}")
+                                    if should_log(LOG_KPI):
+                                        logger.info(f"[KPI] Extracted UE node_id={ue_node_id} for UE {ue_id}")
                                 # Map UE to node (via cell or direct) - fallback if UE object doesn't have node_id
                                 elif node_id is not None:
                                     self.ue_to_node_map[ue_id] = node_id
@@ -915,8 +975,10 @@ class ObserverBridge:
         # Key format: "node_{node_id}" for gNB-level, "cell_{cell_id}" for cell-specific, "ue_{ue_id}" for UE-specific
         self.accumulated_kpis: Dict[str, Dict[str, Any]] = {}  # accumulation_key -> accumulated KPI
         self.accumulation_timestamps: Dict[str, float] = {}  # accumulation_key -> last update time
-        self.accumulation_timeout = 3.0  # seconds - process after this timeout even if incomplete (increased to allow fragment merging)
+        self.accumulation_timeout = 1.0  # seconds - process after this timeout even if incomplete (reduced for faster response)
         self.last_processed_time: Dict[str, float] = {}  # Track when we last processed to avoid duplicate processing
+        self.min_process_interval = 0.2  # Minimum seconds between processing same accumulation (reduced for faster response)
+        self.last_processed_metrics: Dict[str, Dict[str, float]] = {}  # Track last processed metric values to detect changes
         
     async def _listen_actor_apply(self, q):
         """Listen for applied playbooks to update last_playbook."""
@@ -927,6 +989,75 @@ class ObserverBridge:
                 self.last_playbook = playbook
                 logger.debug("Updated last_playbook from actor.apply")
         
+    async def _periodic_process_accumulated(self):
+        """Periodically check and process accumulated KPIs even if no new KPI arrives."""
+        while True:
+            await asyncio.sleep(0.5)  # Check every 0.5 seconds
+            current_time = datetime.now(timezone.utc).timestamp()
+            
+            # Process any accumulated KPIs that meet criteria
+            for accumulation_key, acc_kpi in list(self.accumulated_kpis.items()):
+                acc_cell_metrics = acc_kpi["CellMetrics"]
+                cell_id = acc_cell_metrics.get('cell_id', 'unknown')
+                available_features = [k for k in self.observer.features if k in acc_cell_metrics and acc_cell_metrics[k] is not None]
+                completeness = len(available_features) / len(self.observer.features) if self.observer.features else 0.0
+                time_since_start = current_time - self.accumulation_timestamps.get(accumulation_key, current_time)
+                last_processed = self.last_processed_time.get(accumulation_key, 0)
+                time_since_last_process = current_time - last_processed
+                
+                has_delay = acc_cell_metrics.get('DRB_PdcpSduDelayDl') is not None or acc_cell_metrics.get('UE_DRB_PdcpSduDelayDl_UEID') is not None
+                has_cell_metrics = any(k in acc_cell_metrics and acc_cell_metrics[k] is not None 
+                                      for k in ['RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID'])
+                
+                should_process = (
+                    completeness >= self.observer.min_feature_completeness or
+                    (has_delay and has_cell_metrics and time_since_start >= 0.2) or
+                    (time_since_start >= self.accumulation_timeout and time_since_last_process >= self.min_process_interval)
+                )
+                
+                if should_process:
+                    # Check if metrics have actually changed since last processing
+                    current_metrics = {k: v for k, v in acc_cell_metrics.items() 
+                                     if k in ['DRB_PdcpSduDelayDl', 'RRU_PrbUsedDl', 'UE_DRB_PdcpSduDelayDl_UEID', 
+                                             'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl'] and v is not None}
+                    last_metrics = self.last_processed_metrics.get(accumulation_key, {})
+                    
+                    # Check if any tracked metrics have changed
+                    metrics_changed = False
+                    if not last_metrics:  # First time processing
+                        metrics_changed = True
+                    else:
+                        for key, value in current_metrics.items():
+                            if key not in last_metrics or abs(last_metrics[key] - value) > 1e-6:
+                                metrics_changed = True
+                                break
+                    
+                    # Skip processing if metrics haven't changed (unless timeout expired)
+                    if not metrics_changed and time_since_start < self.accumulation_timeout:
+                        continue
+                    
+                    # Process this accumulated KPI
+                    self.last_processed_time[accumulation_key] = current_time
+                    self.last_processed_metrics[accumulation_key] = current_metrics.copy()
+                    import os
+                    temp_file_tmp = self.temp_file.with_suffix(self.temp_file.suffix + ".tmp")
+                    with open(temp_file_tmp, "w") as f:
+                        json.dump({"kpi_stream": [acc_kpi]}, f)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(temp_file_tmp, self.temp_file)
+                    try:
+                        state = self.observer.step(self.last_playbook)
+                        if state is not None:
+                            import numpy as np
+                            state_list = state.tolist() if hasattr(state, 'tolist') else state
+                            await self.bus.pub("kpi.window", make_msg(
+                                "kpi.window", "STATE_WINDOW", "kpi.window.v1",
+                                {"state": state_list, "reward": 0.0}
+                            ))
+                    except Exception as e:
+                        logger.debug(f"Error in periodic processing: {e}")
+    
     async def run(self):
         """Subscribe to KPIs and update observer, publish state windows."""
         q = await self.bus.sub("kpi.raw")
@@ -936,6 +1067,8 @@ class ObserverBridge:
         # Listen for intent updates and actor apply events
         asyncio.create_task(self._listen_intent(q_intent))
         asyncio.create_task(self._listen_actor_apply(q_actor_apply))
+        # Start periodic processing task
+        asyncio.create_task(self._periodic_process_accumulated())
         
         while True:
             msg = await q.get()
@@ -960,127 +1093,113 @@ class ObserverBridge:
                 
                 node_id = int(node_id)
                 
-                # Determine accumulation key: Only process gNB-level (node_id=2) for cell-level metrics
-                # UE-level KPIs (node_id=3,4) are aggregated into gNB accumulation for global context
-                if node_id == 2:  # gNB node - this is what we process for cell-level metrics
-                    accumulation_key = "gNB_cell_level"  # Single accumulation for all gNB fragments
-                    # Use the best cell_id we've seen (prefer known cell over unknown)
-                    if raw_cell_id.startswith('CELL_'):
-                        # Update cell_id in accumulated data if we see a known cell
-                        if accumulation_key in self.accumulated_kpis:
-                            acc_cell_metrics = self.accumulated_kpis[accumulation_key]['CellMetrics']
-                            if acc_cell_metrics.get('cell_id') == 'unknown' or not acc_cell_metrics.get('cell_id'):
-                                acc_cell_metrics['cell_id'] = raw_cell_id
-                                logger.debug(f"Updated cell_id from 'unknown' to {raw_cell_id} for gNB accumulation")
-                else:
-                    # UE-level KPIs: aggregate their metrics into gNB accumulation for global context
-                    # Don't create separate accumulations for UE nodes - merge into gNB
-                    accumulation_key = "gNB_cell_level"  # Aggregate UE metrics into gNB view
-                    logger.debug(f"Aggregating UE node_id={node_id} metrics into gNB accumulation for global context")
+                # Determine accumulation key based on node_id (not cell_id or meid)
+                # Each node_id gets its own accumulation bucket
+                accumulation_key = f"node_{node_id}"
                 
-                # Initialize or update accumulated KPI for gNB-level metrics
+                # Update cell_id in accumulated data if we see a known cell (for metadata only)
+                if raw_cell_id.startswith('CELL_'):
+                    if accumulation_key in self.accumulated_kpis:
+                        acc_cell_metrics = self.accumulated_kpis[accumulation_key]['CellMetrics']
+                        if acc_cell_metrics.get('cell_id') == 'unknown' or not acc_cell_metrics.get('cell_id'):
+                            acc_cell_metrics['cell_id'] = raw_cell_id
+                            logger.debug(f"Updated cell_id from 'unknown' to {raw_cell_id} for node_id={node_id} accumulation")
+                
+                # Initialize or update accumulated KPI for this node_id
                 if accumulation_key not in self.accumulated_kpis:
-                    # Start new accumulation (only for gNB node_id=2)
-                    if node_id == 2:
-                        self.accumulated_kpis[accumulation_key] = {
-                            "timestamp": kpi.get("timestamp", datetime.now(timezone.utc).isoformat()),
-                            "Header": kpi.get("Header", {}),
-                            "CellMetrics": cell_metrics.copy(),
-                            "UEMetrics": kpi.get("UEMetrics", [])
-                        }
-                        # Ensure cell_id is set (use best available)
-                        if not self.accumulated_kpis[accumulation_key]["CellMetrics"].get('cell_id') or \
-                           self.accumulated_kpis[accumulation_key]["CellMetrics"].get('cell_id') == 'unknown':
-                            if raw_cell_id.startswith('CELL_'):
-                                self.accumulated_kpis[accumulation_key]["CellMetrics"]['cell_id'] = raw_cell_id
-                            else:
-                                self.accumulated_kpis[accumulation_key]["CellMetrics"]['cell_id'] = raw_cell_id
-                        self.accumulation_timestamps[accumulation_key] = current_time
-                    else:
-                        # UE node - skip if gNB accumulation doesn't exist yet
-                        continue
+                    # Start new accumulation for this node_id
+                    self.accumulated_kpis[accumulation_key] = {
+                        "timestamp": kpi.get("timestamp", datetime.now(timezone.utc).isoformat()),
+                        "Header": kpi.get("Header", {}),
+                        "CellMetrics": cell_metrics.copy(),
+                        "UEMetrics": kpi.get("UEMetrics", [])
+                    }
+                    # Ensure cell_id and node_id are set (use best available)
+                    if not self.accumulated_kpis[accumulation_key]["CellMetrics"].get('cell_id') or \
+                       self.accumulated_kpis[accumulation_key]["CellMetrics"].get('cell_id') == 'unknown':
+                        if raw_cell_id.startswith('CELL_'):
+                            self.accumulated_kpis[accumulation_key]["CellMetrics"]['cell_id'] = raw_cell_id
+                        else:
+                            self.accumulated_kpis[accumulation_key]["CellMetrics"]['cell_id'] = raw_cell_id
+                    # Ensure node_id is set
+                    if not self.accumulated_kpis[accumulation_key]["CellMetrics"].get('node_id'):
+                        self.accumulated_kpis[accumulation_key]["CellMetrics"]['node_id'] = node_id
+                    self.accumulation_timestamps[accumulation_key] = current_time
                 else:
-                    # Merge new features into accumulated KPI
+                    # Merge new features into accumulated KPI for this node_id
                     acc_cell_metrics = self.accumulated_kpis[accumulation_key]["CellMetrics"]
                     
-                    if node_id == 2:
-                        # gNB-level: merge cell metrics
-                        for key, value in cell_metrics.items():
-                            if value is not None:  # Only update with non-None values
-                                # Update cell_id if we see a known cell (prefer known over unknown)
-                                if key == 'cell_id':
-                                    if value.startswith('CELL_') and (acc_cell_metrics.get('cell_id') == 'unknown' or not acc_cell_metrics.get('cell_id')):
-                                        acc_cell_metrics[key] = value
-                                        logger.debug(f"Updated cell_id to {value} for {accumulation_key}")
-                                    elif not acc_cell_metrics.get('cell_id') or acc_cell_metrics.get('cell_id') == 'unknown':
-                                        acc_cell_metrics[key] = value
-                                else:
+                    # Merge cell metrics for this node_id
+                    for key, value in cell_metrics.items():
+                        if value is not None:  # Only update with non-None values
+                            # Update cell_id if we see a known cell (prefer known over unknown)
+                            if key == 'cell_id':
+                                if value.startswith('CELL_') and (acc_cell_metrics.get('cell_id') == 'unknown' or not acc_cell_metrics.get('cell_id')):
                                     acc_cell_metrics[key] = value
-                        
-                        # Merge UE metrics from this KPI
-                        ue_metrics = kpi.get("UEMetrics", [])
-                        if ue_metrics:
-                            existing_ue_metrics = self.accumulated_kpis[accumulation_key].get("UEMetrics", [])
-                            # Add new UE metrics (avoid duplicates)
-                            for new_ue in ue_metrics:
-                                new_ue_id = new_ue.get("ue_id") or new_ue.get("ueId")
-                                if new_ue_id:
-                                    # Check if this UE already exists
-                                    existing = next((ue for ue in existing_ue_metrics if (ue.get("ue_id") or ue.get("ueId")) == new_ue_id), None)
-                                    if existing:
-                                        # Merge metrics
-                                        for key, value in new_ue.items():
-                                            if value is not None:
-                                                existing[key] = value
-                                    else:
-                                        existing_ue_metrics.append(new_ue)
-                            self.accumulated_kpis[accumulation_key]["UEMetrics"] = existing_ue_metrics
-                    else:
-                        # UE-level: aggregate UE metrics into gNB accumulation for global context
-                        # Extract UE metrics and aggregate them (e.g., average delay, sum throughput)
-                        ue_metrics = kpi.get("UEMetrics", [])
-                        if ue_metrics:
-                            existing_ue_metrics = self.accumulated_kpis[accumulation_key].get("UEMetrics", [])
-                            for new_ue in ue_metrics:
-                                new_ue_id = new_ue.get("ue_id") or new_ue.get("ueId")
-                                if new_ue_id:
-                                    existing = next((ue for ue in existing_ue_metrics if (ue.get("ue_id") or ue.get("ueId")) == new_ue_id), None)
-                                    if existing:
-                                        # Merge metrics
-                                        for key, value in new_ue.items():
-                                            if value is not None:
-                                                existing[key] = value
-                                    else:
-                                        existing_ue_metrics.append(new_ue)
-                            self.accumulated_kpis[accumulation_key]["UEMetrics"] = existing_ue_metrics
+                                    logger.debug(f"Updated cell_id to {value} for {accumulation_key}")
+                                elif not acc_cell_metrics.get('cell_id') or acc_cell_metrics.get('cell_id') == 'unknown':
+                                    acc_cell_metrics[key] = value
+                            else:
+                                acc_cell_metrics[key] = value
+                    
+                    # Ensure node_id is set
+                    if not acc_cell_metrics.get('node_id'):
+                        acc_cell_metrics['node_id'] = node_id
+                    
+                    # Merge UE metrics from this KPI
+                    ue_metrics = kpi.get("UEMetrics", [])
+                    if ue_metrics:
+                        existing_ue_metrics = self.accumulated_kpis[accumulation_key].get("UEMetrics", [])
+                        # Add new UE metrics (avoid duplicates)
+                        for new_ue in ue_metrics:
+                            new_ue_id = new_ue.get("ue_id") or new_ue.get("ueId")
+                            if new_ue_id:
+                                # Check if this UE already exists
+                                existing = next((ue for ue in existing_ue_metrics if (ue.get("ue_id") or ue.get("ueId")) == new_ue_id), None)
+                                if existing:
+                                    # Merge metrics
+                                    for key, value in new_ue.items():
+                                        if value is not None:
+                                            existing[key] = value
+                                else:
+                                    existing_ue_metrics.append(new_ue)
+                        self.accumulated_kpis[accumulation_key]["UEMetrics"] = existing_ue_metrics
                         
                         # Also aggregate UE-level metrics into cell-level metrics (for global context)
-                        # UE LEVEL: UE_PDCP_Delay_DL_ms, DRB_EstabSucc_5QI_UEID, TB_TotNbrDlInitial_Qpsk_UEID, 
-                        #           TB_TotNbrDlInitial_64Qam_UEID, UE_PRB_Used_DL, UE_Throughput_DL_Mbps
-                        if ue_metrics:
-                            # Aggregate UE delays into cell delay (use max if available)
-                            ue_delays = [float(ue.get("UE_PDCP_Delay_DL_ms", 0)) for ue in ue_metrics if ue.get("UE_PDCP_Delay_DL_ms") is not None]
-                            if ue_delays and not acc_cell_metrics.get('UE_PDCP_Delay_DL_ms'):
-                                # Use max UE delay as cell delay if cell delay not available
-                                acc_cell_metrics['UE_PDCP_Delay_DL_ms'] = max(ue_delays)
-                                logger.debug(f"Aggregated max UE delay {max(ue_delays):.2f}ms into cell metrics")
-                            
-                            # Aggregate UE throughputs (convert Mbps to bps for consistency)
-                            ue_throughputs = [float(ue.get("UE_Throughput_DL_Mbps", 0)) for ue in ue_metrics if ue.get("UE_Throughput_DL_Mbps") is not None]
-                            if ue_throughputs:
-                                total_thr_mbps = sum(ue_throughputs)
-                                # Store as UE_Throughput_DL_Mbps_Total or convert to bps
-                                acc_cell_metrics['UE_Throughput_DL_Mbps_Total'] = total_thr_mbps
-                                logger.debug(f"Aggregated total UE throughput {total_thr_mbps:.2f}Mbps into cell metrics")
-                            
-                            # Count active UEs
-                            if not acc_cell_metrics.get('Mean_Active_UEs_DL'):
-                                acc_cell_metrics['Mean_Active_UEs_DL'] = len(ue_metrics)
+                        # Use actual CSV column names: UE_DRB_PdcpSduDelayDl_UEID, UE_DRB_UEThpDl_UEID, etc.
+                        # Aggregate UE delays (use max for delay)
+                        ue_delays = [float(ue.get("UE_DRB_PdcpSduDelayDl_UEID", 0)) for ue in ue_metrics if ue.get("UE_DRB_PdcpSduDelayDl_UEID") is not None]
+                        if ue_delays and not acc_cell_metrics.get('UE_DRB_PdcpSduDelayDl_UEID'):
+                            acc_cell_metrics['UE_DRB_PdcpSduDelayDl_UEID'] = max(ue_delays)
+                            if should_log(LOG_OBSERVER):
+                                logger.debug(f"Aggregated max UE delay {max(ue_delays):.2f}ms into cell metrics for node_id={node_id}")
+                        
+                        # Aggregate UE throughputs (sum for throughput)
+                        ue_throughputs = [float(ue.get("UE_DRB_UEThpDl_UEID", 0)) for ue in ue_metrics if ue.get("UE_DRB_UEThpDl_UEID") is not None]
+                        if ue_throughputs and not acc_cell_metrics.get('UE_DRB_UEThpDl_UEID'):
+                            acc_cell_metrics['UE_DRB_UEThpDl_UEID'] = sum(ue_throughputs)
+                            if should_log(LOG_OBSERVER):
+                                logger.debug(f"Aggregated total UE throughput {sum(ue_throughputs)/1e6:.2f}Mbps into cell metrics for node_id={node_id}")
+                        
+                        # Aggregate UE PRB usage (sum)
+                        ue_prbs = [float(ue.get("UE_RRU_PrbUsedDl_UEID", 0)) for ue in ue_metrics if ue.get("UE_RRU_PrbUsedDl_UEID") is not None]
+                        if ue_prbs and not acc_cell_metrics.get('UE_RRU_PrbUsedDl_UEID'):
+                            acc_cell_metrics['UE_RRU_PrbUsedDl_UEID'] = sum(ue_prbs)
+                            if should_log(LOG_OBSERVER):
+                                logger.debug(f"Aggregated total UE PRB usage {sum(ue_prbs):.0f} into cell metrics for node_id={node_id}")
+                        
+                        # Aggregate UE DRB establishment success (sum)
+                        ue_estab = [float(ue.get("UE_DRB_EstabSucc_5QI_UEID", 0)) for ue in ue_metrics if ue.get("UE_DRB_EstabSucc_5QI_UEID") is not None]
+                        if ue_estab and not acc_cell_metrics.get('UE_DRB_EstabSucc_5QI_UEID'):
+                            acc_cell_metrics['UE_DRB_EstabSucc_5QI_UEID'] = sum(ue_estab)
+                            if should_log(LOG_OBSERVER):
+                                logger.debug(f"Aggregated UE DRB establishment success {sum(ue_estab):.0f} into cell metrics for node_id={node_id}")
+                        
+                        # Count active UEs
+                        if not acc_cell_metrics.get('DRB_MeanActiveUeDl'):
+                            acc_cell_metrics['DRB_MeanActiveUeDl'] = len(ue_metrics)
                 
-                # Only process gNB-level accumulations (skip UE-only processing)
-                if node_id != 2:
-                    continue  # Skip processing for UE nodes - they're aggregated into gNB
-                
+                # Process accumulations for all node_ids (not just gNB)
                 # Check if we should process this accumulated KPI
                 acc_kpi = self.accumulated_kpis[accumulation_key]
                 acc_cell_metrics = acc_kpi["CellMetrics"]
@@ -1090,10 +1209,11 @@ class ObserverBridge:
                 time_since_start = current_time - self.accumulation_timestamps[accumulation_key]  # FIX: use accumulation_key, not cell_id
                 
                 # Check if we have critical features (delay AND cell metrics) before processing
-                has_delay = acc_cell_metrics.get('UE_PDCP_Delay_DL_ms') is not None
+                has_delay = acc_cell_metrics.get('DRB_PdcpSduDelayDl') is not None or acc_cell_metrics.get('UE_DRB_PdcpSduDelayDl_UEID') is not None
                 has_cell_metrics = any(k in acc_cell_metrics and acc_cell_metrics[k] is not None 
-                                      for k in ['PRB_Used_DL', 'Mean_Active_UEs_DL', 'UE_Throughput_DL_Mbps_Total'])
+                                      for k in ['RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID'])
                 
+                # Process accumulations for all node_ids (not just gNB)
                 # Process if:
                 # 1. We have sufficient completeness, OR
                 # 2. We have both delay and cell metrics (even if completeness is low), OR
@@ -1103,33 +1223,59 @@ class ObserverBridge:
                 
                 should_process = (
                     completeness >= self.observer.min_feature_completeness or
-                    (has_delay and has_cell_metrics and time_since_start >= 0.5) or  # Wait at least 0.5s for fragments to arrive
-                    (time_since_start >= self.accumulation_timeout and time_since_last_process >= 1.0)  # Avoid duplicate processing
+                    (has_delay and has_cell_metrics and time_since_start >= 0.2) or  # Wait at least 0.2s for fragments to arrive (reduced)
+                    (time_since_start >= self.accumulation_timeout and time_since_last_process >= self.min_process_interval)  # Avoid duplicate processing
                 )
                 
+                # Log why we're processing or not processing
+                if should_log(LOG_OBSERVER):
+                    if should_process:
+                        reason = []
+                        if completeness >= self.observer.min_feature_completeness:
+                            reason.append(f"completeness {completeness:.1%} >= min")
+                        if has_delay and has_cell_metrics and time_since_start >= 0.5:
+                            reason.append(f"has_delay+cell_metrics after {time_since_start:.1f}s")
+                        if time_since_start >= self.accumulation_timeout and time_since_last_process >= 1.0:
+                            reason.append(f"timeout {time_since_start:.1f}s >= {self.accumulation_timeout}s")
+                        logger.debug(f"[OBSERVER] Will process: {', '.join(reason)}")
+                    else:
+                        logger.debug(f"[OBSERVER] Skipping: completeness={completeness:.1%}, has_delay={has_delay}, has_cell={has_cell_metrics}, time={time_since_start:.1f}s, last_process={time_since_last_process:.1f}s")
+                
                 if should_process:
-                    # Update last processed time to avoid duplicate processing
+                    # Check if metrics have actually changed since last processing
+                    current_metrics = {k: v for k, v in acc_cell_metrics.items() 
+                                     if k in ['DRB_PdcpSduDelayDl', 'RRU_PrbUsedDl', 'UE_DRB_PdcpSduDelayDl_UEID', 
+                                             'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl'] and v is not None}
+                    last_metrics = self.last_processed_metrics.get(accumulation_key, {})
+                    
+                    # Check if any tracked metrics have changed
+                    metrics_changed = False
+                    if not last_metrics:  # First time processing
+                        metrics_changed = True
+                    else:
+                        for key, value in current_metrics.items():
+                            if key not in last_metrics or abs(last_metrics[key] - value) > 1e-6:
+                                metrics_changed = True
+                                break
+                    
+                    # Skip processing if metrics haven't changed (unless timeout expired)
+                    if not metrics_changed and time_since_start < self.accumulation_timeout:
+                        if should_log(LOG_OBSERVER):
+                            logger.debug(f"[OBSERVER] Skipping processing: metrics unchanged for {accumulation_key}")
+                        continue
+                    
+                    # Update last processed time and metrics to avoid duplicate processing
                     self.last_processed_time[accumulation_key] = current_time
+                    self.last_processed_metrics[accumulation_key] = current_metrics.copy()
                     
                     # Write accumulated KPI to observer's file (atomic write)
-                    import os
-                    temp_file_tmp = self.temp_file.with_suffix(self.temp_file.suffix + ".tmp")
-                    with open(temp_file_tmp, "w") as f:
-                        json.dump({"kpi_stream": [acc_kpi]}, f)
-                        f.flush()
-                        os.fsync(f.fileno())
-                    os.replace(temp_file_tmp, self.temp_file)
-                    
-                    delay = acc_cell_metrics.get('UE_PDCP_Delay_DL_ms', 'N/A')
-                    # Log which features we have
-                    feature_list = ', '.join(available_features[:5])  # Show first 5
-                    if len(available_features) > 5:
-                        feature_list += f" ... (+{len(available_features)-5} more)"
-                    logger.info(f"Processing accumulated KPI for {cell_id}: UE_PDCP_Delay_DL_ms={delay}, feature completeness={completeness:.1%}, features={len(available_features)}/{len(self.observer.features)} [{feature_list}]")
-                    
-                    # Process with observer
+                    # Direct pass to observer (skip file I/O for performance)
                     try:
-                        state = self.observer.step(self.last_playbook)
+                        # Log before calling observer.step() to diagnose
+                        if should_log(LOG_OBSERVER):
+                            logger.debug(f"[OBSERVER] Calling observer.step() with completeness={completeness:.1%}, buf_size={len(self.observer.buf)}/{self.observer.window}")
+                        # Pass kpi_dict directly to avoid file I/O latency
+                        state = self.observer.step(self.last_playbook, kpi_dict=acc_kpi)
                         if state is not None:
                             # Publish state window
                             try:
@@ -1154,9 +1300,11 @@ class ObserverBridge:
                                     "reward": 0.0,  # Observer computes reward internally
                                 }
                             ))
-                            logger.info(f"Published state window to membus (shape: {shape_info})")
+                            if should_log(LOG_OBSERVER):
+                                logger.info(f"[OBSERVER] Published state window to membus (shape: {shape_info})")
                         else:
-                            logger.debug(f"Observer returned None state - window may not be full yet (buf size: {len(self.observer.buf)})")
+                            if should_log(LOG_OBSERVER):
+                                logger.debug(f"[OBSERVER] Observer returned None state - window may not be full yet (buf size: {len(self.observer.buf)})")
                     except Exception as e:
                         logger.error(f"Error in observer.step(): {e}")
                         import traceback
@@ -1172,7 +1320,7 @@ class ObserverBridge:
                     logger.debug(f"Accumulating KPI for {cell_id}: {len(available_features)}/{len(self.observer.features)} features, {completeness:.1%} complete, {time_since_start:.2f}s elapsed")
                 
                 # Clean up old accumulated KPIs (timeout expired) - only for gNB
-                if node_id == 2:  # Only check timeout for gNB-level accumulations
+                # Check timeout for all node_id accumulations
                     expired_keys = [
                         key for key, ts in self.accumulation_timestamps.items()
                         if current_time - ts >= self.accumulation_timeout and key in self.accumulated_kpis
@@ -1180,17 +1328,10 @@ class ObserverBridge:
                     for key in expired_keys:
                         if key in self.accumulated_kpis:
                             logger.warning(f"Timeout: Processing incomplete KPI for {key} after {self.accumulation_timeout}s")
-                            # Process even if incomplete
+                            # Process even if incomplete (pass directly)
                             acc_kpi = self.accumulated_kpis[key]
-                            import os
-                            temp_file_tmp = self.temp_file.with_suffix(self.temp_file.suffix + ".tmp")
-                            with open(temp_file_tmp, "w") as f:
-                                json.dump({"kpi_stream": [acc_kpi]}, f)
-                                f.flush()
-                                os.fsync(f.fileno())
-                            os.replace(temp_file_tmp, self.temp_file)
                             try:
-                                state = self.observer.step(self.last_playbook)
+                                state = self.observer.step(self.last_playbook, kpi_dict=acc_kpi)
                                 if state is not None:
                                     import numpy as np
                                     state_list = state.tolist() if hasattr(state, 'tolist') else state
@@ -1212,7 +1353,7 @@ class ObserverBridge:
             # Update observer's intent
             self.observer.intent = Intent(
                 type=rl_intent.get("type", "REDUCE_LATENCY"),
-                metric=rl_intent.get("metric", "delay_p95_ms"),
+                metric=rl_intent.get("metric", "DRB_PdcpSduDelayDl"),  # Use actual CSV metric name
                 target=float(rl_intent.get("target", 40.0)),
                 direction=rl_intent.get("direction", "lower_better"),
                 action_cost=float(rl_intent.get("action_cost", 0.01)),
@@ -1225,7 +1366,7 @@ async def run_ai_loop_with_membus(
     tcp_server: XAppTCPServer,
     cells: List[str],
     slices: List[str],
-    target_metric: str = "delay_p95_ms",
+    target_metric: str = "DRB_PdcpSduDelayDl",  # Use actual CSV metric name
     target_value: float = 40.0,
     steps: int = 1000,
     offline_model: Optional[str] = None,
@@ -1233,6 +1374,9 @@ async def run_ai_loop_with_membus(
     minirocket_gnb_model: Optional[str] = None,
     minirocket_ue_model: Optional[str] = None,
     use_llm: bool = False,
+    model_type: str = "stable",
+    loss_history_file: Optional[str] = None,
+    slo_file: Optional[str] = None,
 ):
     """Run the AI loop using membus architecture matching system design."""
     # Create membus
@@ -1285,16 +1429,28 @@ async def run_ai_loop_with_membus(
     else:
         logger.info("Starting from scratch (no checkpoint or offline model provided)")
     
+    # Load SLO config for multi-metric reward calculation
+    slo_config = None
+    if slo_file:
+        try:
+            from ain.agents.reasoner_agent_enhanced import SLOConfig
+            slo_config = SLOConfig(slo_file=slo_file)
+            logger.info(f"Loaded SLO config from {slo_file} for multi-metric reward calculation")
+        except Exception as e:
+            logger.warning(f"Could not load SLO config: {e}, using single-metric reward")
+    
     observer = RLObserver(
         predictor=predictor, 
         intent=tmp_intent, 
         kpi_file=str(temp_kpi_file), 
         window=12,
-        min_feature_completeness=0.1  # Require at least 10% of features (1 out of 10) to be present
+        min_feature_completeness=0.1,  # Require at least 10% of features (1 out of 10) to be present
+        enable_multi_metric_reward=True,  # Enable multi-metric reward calculation
+        slo_config=slo_config  # Pass SLO config for multi-metric rewards
     )
     
     # Create actor
-    actor = Actor("configs")
+    actor = Actor("playbooks")
     converter = PlaybookToCommandConverter()
     actor_agent = XAppActorAgent(bus, actor, tcp_server, converter)
     
@@ -1328,9 +1484,9 @@ async def run_ai_loop_with_membus(
         # Determine UE metric name from target_metric or use default
         ue_metric = target_metric
         # Map common metric names to actual CSV column names
-        if ue_metric == "delay_p95_ms":
+        if ue_metric == "delay_p95_ms" or ue_metric == "DRB_PdcpSduDelayDl":
             ue_metric = "UE_DRB_PdcpSduDelayDl_UEID"  # Use actual column name from CSV
-        elif ue_metric == "thr_dl_bps":
+        elif ue_metric == "thr_dl_bps" or ue_metric == "UE_DRB_UEThpDl_UEID":
             ue_metric = "UE_DRB_UEThpDl_UEID"  # Or appropriate UE metric
         
         ue_model_path = minirocket_ue_model or minirocket_model or "models/minirocket_xapp_ue.joblib"
@@ -1357,47 +1513,12 @@ async def run_ai_loop_with_membus(
     reasoner_agent = EnhancedReasonerAgent(
         bus,
         knowledge_base=knowledge_base,
-        use_llm=use_llm
+        use_llm=use_llm,
+        slo_file=slo_file
     )
     
-    # Publish initial SLO intent so system can start working even without deviations
-    async def publish_initial_slo():
-        await asyncio.sleep(2.0)  # Wait a bit for system to initialize
-        initial_slo = {
-            "slo_id": "initial_slo",
-            "metric": target_metric,
-            "target": target_value,
-            "direction": "lower_better" if "delay" in target_metric or "latency" in target_metric else "higher_better"
-        }
-        await bus.pub("slo.intent", make_msg(
-            "slo.intent", "SLO_INTENT", "slo.intent.v1", initial_slo
-        ))
-        logger.info(f"Published initial SLO intent: {target_metric} target={target_value}")
-        
-        # Also create an initial intent directly (for systems that start without deviations)
-        # This allows the proposer to start generating playbooks immediately
-        initial_intent = {
-            "intent_id": "initial_intent",
-            "metric": target_metric,
-            "target": target_value,
-            "direction": initial_slo["direction"],
-            "type": "REDUCE_LATENCY" if "delay" in target_metric or "latency" in target_metric else "INCREASE_THROUGHPUT"
-        }
-        await bus.pub("intent.current", make_msg(
-            "intent.current", "INTENT", "intent.v1", initial_intent
-        ))
-        await bus.pub("intent.rl", make_msg(
-            "intent.rl", "RL_INTENT", "rl_intent.v1", {
-                "type": initial_intent["type"],
-                "metric": initial_intent["metric"],
-                "target": initial_intent["target"],
-                "direction": initial_intent["direction"],
-                "action_cost": 0.01,
-                "reward_clip": 2.0,
-            }
-        ))
-        logger.info(f"Published initial intent: {initial_intent['type']} for {target_metric} (target={target_value})")
-    
+    # NOTE: Removed initial intent publishing - intents should only be created from deviations
+    # The reasoner agent will create intents when deviations are detected by Minirocket
     # 3. Proposer Agent (intent.current + Knowledge Base → proposer.candidates)
     proposer_agent = ProposerAgent(
         bus,
@@ -1414,6 +1535,12 @@ async def run_ai_loop_with_membus(
     # Setup checkpoint saving
     online_checkpoint = "models/qnet_online.pt"
     
+    # Determine loss history file path
+    if loss_history_file:
+        loss_history_path = loss_history_file
+    else:
+        loss_history_path = f"models/loss_history_{model_type}.json"
+    
     async def periodic_checkpoint_saver():
         """Periodically save checkpoint every 50 steps."""
         while True:
@@ -1422,14 +1549,18 @@ async def run_ai_loop_with_membus(
                 try:
                     checkpoint_path = predictor.save_checkpoint(online_checkpoint, save_replay_buffer=False)
                     logger.info(f"💾 Saved periodic checkpoint to {checkpoint_path} (step={predictor.steps}, replay_size={len(predictor.replay)})")
+                    # Also save loss history periodically
+                    predictor.save_loss_history(loss_history_path)
                 except Exception as e:
                     logger.warning(f"Failed to save periodic checkpoint: {e}")
     
     def save_on_exit(signum=None, frame=None):
-        """Save checkpoint before exiting."""
+        """Save checkpoint and loss history before exiting."""
         try:
             checkpoint_path = predictor.save_checkpoint(online_checkpoint, save_replay_buffer=False)
             logger.info(f"💾 Saved final checkpoint to {checkpoint_path} (step={predictor.steps})")
+            # Save loss history on exit
+            predictor.save_loss_history(loss_history_path)
         except Exception as e:
             logger.error(f"Failed to save checkpoint on exit: {e}")
         sys.exit(0)
@@ -1452,19 +1583,26 @@ async def run_ai_loop_with_membus(
         asyncio.create_task(predictor_agent.run(), name="predictor_agent"),
         asyncio.create_task(observer_bridge.run(), name="observer_bridge"),
         asyncio.create_task(actor_agent.run(), name="actor_agent"),
-        asyncio.create_task(publish_initial_slo(), name="publish_initial_slo"),
         asyncio.create_task(periodic_checkpoint_saver(), name="checkpoint_saver"),
     ]
     
     try:
-        await asyncio.gather(*tasks)
+        # Use return_exceptions=True so one task failure doesn't kill the whole system
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Check for exceptions in results
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                task_name = tasks[i].get_name() if hasattr(tasks[i], 'get_name') else f"task_{i}"
+                logger.error(f"Task {task_name} raised exception: {result}", exc_info=result)
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
     finally:
-        # Save final checkpoint before exiting
+        # Save final checkpoint and loss history before exiting
         try:
             checkpoint_path = predictor.save_checkpoint(online_checkpoint, save_replay_buffer=False)
             logger.info(f"💾 Saved final checkpoint to {checkpoint_path} (step={predictor.steps})")
+            # Save loss history on exit (use the loss_history_path from outer scope)
+            predictor.save_loss_history(loss_history_path)
         except Exception as e:
             logger.error(f"Failed to save final checkpoint: {e}")
         
@@ -1478,7 +1616,7 @@ async def main():
     parser.add_argument("--host", type=str, default="0.0.0.0", help="TCP server host")
     parser.add_argument("--port", type=int, default=6000, help="TCP server port")
     parser.add_argument("--steps", type=int, default=1000, help="Max steps")
-    parser.add_argument("--target-metric", type=str, default="delay_p95_ms", help="Target metric")
+    parser.add_argument("--target-metric", type=str, default="DRB_PdcpSduDelayDl", help="Target metric (use actual CSV column name, e.g., DRB_PdcpSduDelayDl)")
     parser.add_argument("--target-value", type=float, default=40.0, help="Target value")
     parser.add_argument("--cells", type=str, nargs="+", default=["CELL_001"], help="Cell IDs")
     parser.add_argument("--slices", type=str, nargs="+", default=["SLICE_A"], help="Slice IDs")
@@ -1494,8 +1632,26 @@ async def main():
                        help="Enable sending control commands to xApp (default: enabled)")
     parser.add_argument("--commands-disabled", action="store_false", dest="commands_enabled",
                        help="Disable sending control commands to xApp (useful for KPI collection only)")
+    parser.add_argument("--log-level", type=str, default="all",
+                       help="Comma-separated log categories to enable: 1=LEARNING, 2=INTENT, 3=SCORING/PLAYBOOK, 4=DEVIATION/COMMANDS, 5=OBSERVER, 6=REWARD, 7=KPI, or 'all' (default: all)")
+    parser.add_argument("--model-type", type=str, default="stable", choices=["stable", "unstable"],
+                       help="Model type: 'stable' (uses target network with soft updates) or 'unstable' (no target network or hard updates). Affects loss history filename.")
+    parser.add_argument("--loss-history-file", type=str, default=None,
+                       help="Path to save loss history JSON file. Default: models/loss_history_{model_type}.json")
+    parser.add_argument("--slo-file", type=str, default="configs/slos.json",
+                       help="Path to SLO JSON configuration file (default: configs/slos.json)")
     
     args = parser.parse_args()
+    
+    # Configure log levels
+    log_levels = parse_log_levels(args.log_level)
+    set_log_levels(log_levels)
+    enabled_names = [CATEGORY_NAMES.get(l, str(l)) for l in sorted(log_levels)]
+    logger.info(f"==========================================")
+    logger.info(f"Log Level Configuration:")
+    logger.info(f"  Enabled categories: {', '.join(enabled_names)}")
+    logger.info(f"  Total: {len(log_levels)}/{7} categories")
+    logger.info(f"==========================================")
     
     # Create TCP server
     tcp_server = XAppTCPServer(host=args.host, port=args.port, commands_enabled=args.commands_enabled)
@@ -1520,6 +1676,9 @@ async def main():
             minirocket_gnb_model=args.minirocket_gnb_model,
             minirocket_ue_model=args.minirocket_ue_model,
             use_llm=args.use_llm,
+            model_type=args.model_type,
+            loss_history_file=args.loss_history_file,
+            slo_file=args.slo_file,
         )
     except KeyboardInterrupt:
         logger.info("Interrupted by user")

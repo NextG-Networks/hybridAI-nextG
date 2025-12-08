@@ -6,17 +6,21 @@ Matches the system design: KPI Stream → Minirocket → Reasoner
 """
 
 import asyncio
+import logging
 from typing import Dict, Any, Optional
 from .utils import make_msg
 from datetime import datetime, timezone, timedelta
 from collections import deque
+from ain.common.log_config import should_log, LOG_DEVIATION
+
+logger = logging.getLogger(__name__)
 
 try:
     from ain.features.minirocket_rt import MiniRocketRT
     MINIROCKET_AVAILABLE = True
 except ImportError:
     MINIROCKET_AVAILABLE = False
-    print("[MinirocketAgent] MiniRocket not available, using fallback threshold detection")
+    logger.warning("[DEVIATION] MiniRocket not available, using fallback threshold detection")
 
 
 class MinirocketAgent:
@@ -56,12 +60,15 @@ class MinirocketAgent:
         if MINIROCKET_AVAILABLE:
             try:
                 self.minirocket = MiniRocketRT(model_path=model_path, win=window_size)
-                print(f"[MinirocketAgent] Loaded model from {model_path}")
+                if should_log(LOG_DEVIATION):
+                    logger.info(f"[DEVIATION] Loaded model from {model_path}")
             except Exception as e:
-                print(f"[MinirocketAgent] Failed to load model: {e}, using fallback")
+                if should_log(LOG_DEVIATION):
+                    logger.warning(f"[DEVIATION] Failed to load model: {e}, using fallback")
                 self.minirocket = None
         else:
-            print("[MinirocketAgent] Using fallback threshold-based detection")
+            if should_log(LOG_DEVIATION):
+                logger.info("[DEVIATION] Using fallback threshold-based detection")
     
     async def run(self):
         """Subscribe to KPI stream and detect deviations."""
@@ -127,9 +134,11 @@ class MinirocketAgent:
                 result = self.minirocket.push(value)
                 if result and result.get("pred") == 1:  # 1 = deviation detected
                     is_deviation = True
-                    print(f"[MinirocketAgent] ML model detected deviation: {self.metric}={value:.2f}")
+                    if should_log(LOG_DEVIATION):
+                        logger.info(f"[DEVIATION] ML model detected deviation: {self.metric}={value:.2f}")
                 elif result:
-                    print(f"[MinirocketAgent] ML model prediction: {self.metric}={value:.2f}, pred={result.get('pred')}")
+                    if should_log(LOG_DEVIATION):
+                        logger.debug(f"[DEVIATION] ML model prediction: {self.metric}={value:.2f}, pred={result.get('pred')}")
             else:
                 # Fallback: simple threshold-based detection
                 # This is a placeholder - in real system, you'd have SLO targets
@@ -138,9 +147,11 @@ class MinirocketAgent:
                 threshold = baseline * 1.2  # 20% above baseline
                 if value > threshold:
                     is_deviation = True
-                    print(f"[MinirocketAgent] Threshold detected deviation: {self.metric}={value:.2f} > {threshold:.2f}")
+                    if should_log(LOG_DEVIATION):
+                        logger.info(f"[DEVIATION] Threshold detected deviation: {self.metric}={value:.2f} > {threshold:.2f}")
                 else:
-                    print(f"[MinirocketAgent] No deviation (threshold): {self.metric}={value:.2f} <= {threshold:.2f}")
+                    if should_log(LOG_DEVIATION):
+                        logger.debug(f"[DEVIATION] No deviation (threshold): {self.metric}={value:.2f} <= {threshold:.2f}")
             
             # Debouncing logic: only report if:
             # 1. We have enough consecutive deviations (min_deviation_count)
@@ -183,20 +194,25 @@ class MinirocketAgent:
                 await self.bus.pub("deviation.detected", make_msg(
                     "deviation.detected", "DEVIATION", "deviation.v1", deviation
                 ))
-                print(f"[MinirocketAgent] Deviation detected: {self.metric}={value:.2f} (debounced)")
+                if should_log(LOG_DEVIATION):
+                    logger.info(f"[DEVIATION] Deviation detected: {self.metric}={value:.2f} (debounced)")
                 self.last_deviation_time = now
                 self.last_reported_value = value
             else:
                 # Log why we're not reporting (for debugging)
                 if is_deviation:
                     if len(self.deviation_buffer) < self.min_deviation_count:
-                        print(f"[MinirocketAgent] Deviation detected but buffer not full: {len(self.deviation_buffer)}/{self.min_deviation_count}")
+                        if should_log(LOG_DEVIATION):
+                            logger.debug(f"[DEVIATION] Deviation detected but buffer not full: {len(self.deviation_buffer)}/{self.min_deviation_count}")
                     elif self.last_deviation_time and (now - self.last_deviation_time).total_seconds() < self.debounce_seconds:
-                        print(f"[MinirocketAgent] Deviation detected but in cooldown: {(now - self.last_deviation_time).total_seconds():.1f}s < {self.debounce_seconds}s")
+                        if should_log(LOG_DEVIATION):
+                            logger.debug(f"[DEVIATION] Deviation detected but in cooldown: {(now - self.last_deviation_time).total_seconds():.1f}s < {self.debounce_seconds}s")
                     elif self.last_reported_value and abs(value - self.last_reported_value) < 0.1:
-                        print(f"[MinirocketAgent] Deviation detected but value change too small: {abs(value - self.last_reported_value):.3f}")
+                        if should_log(LOG_DEVIATION):
+                            logger.debug(f"[DEVIATION] Deviation detected but value change too small: {abs(value - self.last_reported_value):.3f}")
                 else:
-                    print(f"[MinirocketAgent] No deviation: {self.metric}={value:.2f} (baseline check)")
+                    if should_log(LOG_DEVIATION):
+                        logger.debug(f"[DEVIATION] No deviation: {self.metric}={value:.2f} (baseline check)")
     
     def _create_deviation_event(self, kpi: Dict[str, Any], value: float, 
                                 confidence: float = 0.8) -> Dict[str, Any]:

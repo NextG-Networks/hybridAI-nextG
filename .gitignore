@@ -10,4 +10,4 @@ __pycache__/
 poetry.lock
 models/
 data/
-configs/
+playbooks/

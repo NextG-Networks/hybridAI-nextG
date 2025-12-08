@@ -2,10 +2,14 @@
 from __future__ import annotations
 from typing import List, Tuple, Dict, Any
 import math
+import logging
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from ain.common.log_config import should_log, LOG_LEARNING, LOG_SCORING
+
+logger = logging.getLogger(__name__)
 
 from ain.loop.proposer import (
     Playbook, ControlAction, ActionSpace,
@@ -20,7 +24,7 @@ from ain.loop.model_defs import SlateDQNetwork
 
 GAMMA = 0.99 # Discount factor (closer to one means longterm learning, lower means short term learning)
 LR = 1e-3
-BATCH_SIZE = 64
+BATCH_SIZE = 32  # Changed from 1 to 64 for stable learning (needs at least 64 samples in replay buffer)
 REPLAY_CAP = 100000
 TAU = 0.005 # Target network soft update rate
 EPS_START = 0.2 # Exploration vs exploitation
@@ -83,6 +87,8 @@ class SlateDQNPredictor:
         self.replay = ReplayBuffer(capacity=REPLAY_CAP)
         self.steps = 0
         self.action_onehot_dim = self.model.input_dim_action_onehot
+        self.model.train()  # Start in training mode
+        self.loss_history = []  # Track loss for plotting
 
 
     # Encodes our actions intpo one-hot vectors and stacks them
@@ -134,9 +140,45 @@ class SlateDQNPredictor:
             B = len(playbooks)
             state_batch = np.repeat(state_window[np.newaxis, :, :], B, axis=0)
             play_batch = np.stack([self.encode_playbook_onehot(pb) for pb in playbooks], axis=0)
+            
+            # Check for NaN/inf in inputs
+            if np.any(np.isnan(state_batch)) or np.any(np.isinf(state_batch)):
+                if should_log(LOG_SCORING):
+                    logger.warning("NaN/inf detected in state input, replacing with zeros")
+                state_batch = np.nan_to_num(state_batch, nan=0.0, posinf=0.0, neginf=0.0)
+            if np.any(np.isnan(play_batch)) or np.any(np.isinf(play_batch)):
+                if should_log(LOG_SCORING):
+                    logger.warning("NaN/inf detected in playbook input, replacing with zeros")
+                play_batch = np.nan_to_num(play_batch, nan=0.0, posinf=0.0, neginf=0.0)
+            
             s = torch.tensor(state_batch, dtype=torch.float32, device=DEVICE)
             p = torch.tensor(play_batch, dtype=torch.float32, device=DEVICE)
-            q = self.model(s, p).cpu().numpy().tolist()
+            q_raw = self.model(s, p)
+            
+            # Clamp Q-values to reasonable range to prevent extreme values
+            q_raw = torch.clamp(q_raw, -10.0, 10.0)
+            q = q_raw.cpu().numpy().tolist()
+            
+            # Check for NaN/inf in outputs (untrained model issue)
+            q_clean = []
+            for q_val in q:
+                if np.isnan(q_val) or not np.isfinite(q_val):
+                    q_clean.append(0.0)  # Return 0 for invalid values
+                else:
+                    q_clean.append(float(q_val))
+            q = q_clean
+            
+            # Debug: log Q-values if they're all zero (untrained model)
+            if should_log(LOG_SCORING):
+                if all(abs(qv) < 0.001 for qv in q):
+                    logger.debug(f"All Q-values are ~0 (model may be untrained, steps={self.steps})")
+                
+                # Log scoring details
+                q_mean = np.mean(q) if q else 0.0
+                q_std = np.std(q) if q else 0.0
+                q_min = min(q) if q else 0.0
+                q_max = max(q) if q else 0.0
+                logger.debug(f"[SCORING] Scored {len(playbooks)} playbooks: Q_mean={q_mean:.4f}, Q_std={q_std:.4f}, Q_range=[{q_min:.4f}, {q_max:.4f}], steps={self.steps}")
         return list(zip(playbooks, q))
 
     def epsilon(self):
@@ -147,8 +189,26 @@ class SlateDQNPredictor:
 
     def learn_step(self):
         if len(self.replay) < BATCH_SIZE:
+            if should_log(LOG_LEARNING):
+                logger.debug(f"[LEARNING] Skipping learn_step: replay buffer size ({len(self.replay)}) < BATCH_SIZE ({BATCH_SIZE})")
             return None
+        
+        self.model.train()  # Ensure model is in training mode
+        
         s, p, r, s2, d = self.replay.sample(BATCH_SIZE)
+        if should_log(LOG_LEARNING):
+            logger.debug(f"[LEARNING] Sampling batch: replay_size={len(self.replay)}, batch_size={BATCH_SIZE}, step={self.steps}")
+        
+        # Check for NaN/inf in inputs and clean them
+        if np.any(np.isnan(s)) or np.any(np.isinf(s)):
+            s = np.nan_to_num(s, nan=0.0, posinf=0.0, neginf=0.0)
+        if np.any(np.isnan(p)) or np.any(np.isinf(p)):
+            p = np.nan_to_num(p, nan=0.0, posinf=0.0, neginf=0.0)
+        if np.any(np.isnan(s2)) or np.any(np.isinf(s2)):
+            s2 = np.nan_to_num(s2, nan=0.0, posinf=0.0, neginf=0.0)
+        if np.any(np.isnan(r)) or np.any(np.isinf(r)):
+            r = np.nan_to_num(r, nan=0.0, posinf=0.0, neginf=0.0)
+        
         s = torch.tensor(s, dtype=torch.float32, device=DEVICE)
         p = torch.tensor(p, dtype=torch.float32, device=DEVICE)
         r = torch.tensor(r, dtype=torch.float32, device=DEVICE)
@@ -159,21 +219,57 @@ class SlateDQNPredictor:
 
         with torch.no_grad():
             q2 = self.target(s2, p)
+            # Clip Q values to prevent explosion
+            q2 = torch.clamp(q2, min=-10.0, max=10.0)
             y = r + GAMMA * (1.0 - d) * q2
-
+            # Clip targets as well
+            y = torch.clamp(y, min=-10.0, max=10.0)
 
         loss = F.mse_loss(q, y)
+        
+        # Check for NaN loss
+        if torch.isnan(loss) or torch.isinf(loss):
+            if should_log(LOG_LEARNING):
+                logger.warning(f"[LEARNING] NaN/inf loss detected, skipping update (step={self.steps})")
+            return None
+        
+        # Log learning metrics before update
+        loss_val = float(loss.item())
+        q_mean = float(q.mean().item())
+        y_mean = float(y.mean().item())
+        reward_mean = float(r.mean().item())
+        
         self.optim.zero_grad()
         loss.backward()
-        nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+        grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
         self.optim.step()
+        
+        # Increment step counter
+        self.steps += 1
 
         # soft target update
         with torch.no_grad():
             for tp, p_ in zip(self.target.parameters(), self.model.parameters()):
                 tp.data.mul_(1 - TAU).add_(p_.data * TAU)
 
-        return float(loss.item())
+        # Track loss history
+        self.loss_history.append({
+            'step': self.steps,
+            'loss': loss_val,
+            'q_mean': q_mean,
+            'target_mean': y_mean,
+            'reward_mean': reward_mean,
+            'grad_norm': float(grad_norm)
+        })
+        
+        # Log learning progress
+        if should_log(LOG_LEARNING):
+            if self.steps % 10 == 0 or loss_val > 1.0:  # Log every 10 steps or if loss is high
+                logger.info(f"[LEARNING] Step={self.steps}, loss={loss_val:.6f}, Q_mean={q_mean:.4f}, target_mean={y_mean:.4f}, reward_mean={reward_mean:.4f}, grad_norm={grad_norm:.4f}, replay_size={len(self.replay)}")
+            else:
+                logger.debug(f"[LEARNING] Step={self.steps}, loss={loss_val:.6f}, Q_mean={q_mean:.4f}, target_mean={y_mean:.4f}, reward_mean={reward_mean:.4f}")
+
+        return loss_val
     
     def observe(self, s: np.ndarray, playbook: Playbook, r: float, s2: np.ndarray, done: bool):
         p = self.encode_playbook_onehot(playbook)   # [K,D]
@@ -191,7 +287,104 @@ class SlateDQNPredictor:
         self.target = SlateDQNetwork(feat_dim=self.model.state_enc.gru.input_size, cell_cap=cell_cap, slice_cap=slice_cap).to(DEVICE)
         self.target.load_state_dict(self.model.state_dict())
         self.action_onehot_dim = self.model.input_dim_action_onehot
-        self.model.eval()
+        self.model.train()  # Set to training mode for online learning
+    
+    def save_checkpoint(self, path="models/qnet_online.pt", save_replay_buffer=False):
+        """Save current model state for resuming training later."""
+        from pathlib import Path
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        
+        checkpoint = {
+            "state_dict": self.model.state_dict(),
+            "target_state_dict": self.target.state_dict(),
+            "optimizer_state_dict": self.optim.state_dict(),
+            "steps": self.steps,
+            "meta": {
+                "feat_dim": self.model.state_enc.gru.input_size,
+                "cell_cap": len(self.cell_index),
+                "slice_cap": len(self.slice_index),
+                "cell_index": self.cell_index,
+                "slice_index": self.slice_index,
+            }
+        }
+        
+        # Optionally save replay buffer (can be large)
+        if save_replay_buffer:
+            checkpoint["replay_buffer"] = {
+                "buf": self.replay.buf,
+                "pos": self.replay.pos,
+                "capacity": self.replay.capacity
+            }
+        
+        torch.save(checkpoint, path)
+        return path
+    
+    def load_checkpoint(self, path="models/qnet_online.pt", load_replay_buffer=False):
+        """Load checkpoint to resume training from previous run."""
+        import os
+        if not os.path.exists(path):
+            return False
+        
+        ckpt = torch.load(path, map_location="cpu")
+        meta = ckpt.get("meta", {})
+        
+        # Verify dimensions match
+        feat_dim = meta.get("feat_dim", self.model.state_enc.gru.input_size)
+        cell_cap = meta.get("cell_cap", len(self.cell_index))
+        slice_cap = meta.get("slice_cap", len(self.slice_index))
+        
+        if (feat_dim != self.model.state_enc.gru.input_size or
+            cell_cap != len(self.cell_index) or
+            slice_cap != len(self.slice_index)):
+            if should_log(LOG_LEARNING):
+                logger.warning("Checkpoint dimensions don't match. Skipping load.")
+            return False
+        
+        # Load model weights
+        self.model.load_state_dict(ckpt["state_dict"])
+        self.target.load_state_dict(ckpt["target_state_dict"])
+        
+        # Load optimizer state if available
+        if "optimizer_state_dict" in ckpt:
+            self.optim.load_state_dict(ckpt["optimizer_state_dict"])
+        
+        # Load training step count
+        if "steps" in ckpt:
+            self.steps = ckpt["steps"]
+        
+        # Load replay buffer if requested and available
+        if load_replay_buffer and "replay_buffer" in ckpt:
+            rb_data = ckpt["replay_buffer"]
+            self.replay.buf = rb_data.get("buf", [])
+            self.replay.pos = rb_data.get("pos", 0)
+            self.replay.capacity = rb_data.get("capacity", REPLAY_CAP)
+        
+        self.model.train()  # Set to training mode for online learning
+        if should_log(LOG_LEARNING):
+            logger.info(f"[LEARNING] Loaded checkpoint: step={self.steps}, replay_size={len(self.replay)}")
+        return True
+    
+    def save_loss_history(self, path: str):
+        """Save loss history to JSON file for plotting."""
+        import json
+        from pathlib import Path
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(self.loss_history, f, indent=2)
+        if should_log(LOG_LEARNING):
+            logger.info(f"[LEARNING] Saved loss history ({len(self.loss_history)} entries) to {path}")
+    
+    def load_loss_history(self, path: str):
+        """Load loss history from JSON file."""
+        import json
+        import os
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                self.loss_history = json.load(f)
+            if should_log(LOG_LEARNING):
+                logger.info(f"[LEARNING] Loaded loss history ({len(self.loss_history)} entries) from {path}")
+            return True
+        return False
 
 
 
