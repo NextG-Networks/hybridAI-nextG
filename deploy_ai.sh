@@ -16,10 +16,10 @@ TARGET_VALUE="${TARGET_VALUE:-40.0}"
 CELLS="${CELLS:-CELL_001}"
 SLICES="${SLICES:-SLICE_A}"
 STEPS="${STEPS:-1000}"
-LOG_LEVEL="${LOG_LEVEL:-4,6}"
-# Log level categories: 1=LEARNING, 2=INTENT, 3=SCORING/PLAYBOOK, 4=DEVIATION/COMMANDS, 5=OBSERVER, 6=REWARD, 7=KPI
+LOG_LEVEL="${LOG_LEVEL:-8,2}"
+# Log level categories: 1=LEARNING, 2=INTENT, 3=SCORING/PLAYBOOK, 4=DEVIATION, 5=OBSERVER, 6=REWARD, 7=KPI, 8=COMMANDS
 # Use comma-separated numbers (e.g., "1,2,3") or "all" for everything
-# Default: "4,6" = DEVIATION/COMMANDS + REWARD (to see reward computation details)
+# Default: "4,8,2" = DEVIATION + COMMANDS + INTENT
 # Set LOG_LEVEL="1,2,3,4,5,6" to disable KPI logs (category 7) but enable all others
 # Set LOG_LEVEL="6" to see only reward logs
 # Set LOG_LEVEL="all" to see everything

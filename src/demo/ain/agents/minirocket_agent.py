@@ -3,11 +3,12 @@ Minirocket Deviation Detection Agent
 
 Uses MiniRocket ML model to detect deviations in KPI stream.
 Matches the system design: KPI Stream → Minirocket → Reasoner
+Supports concurrent monitoring of multiple entities (gNB + multiple UEs).
 """
 
 import asyncio
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from .utils import make_msg
 from datetime import datetime, timezone, timedelta
 from collections import deque
@@ -23,21 +24,110 @@ except ImportError:
     logger.warning("[DEVIATION] MiniRocket not available, using fallback threshold detection")
 
 
+class DeviationMonitor:
+    """State management for a single monitored entity (gNB or UE)."""
+    
+    def __init__(self, entity_id: str, model_path: str, window_size: int, 
+                 metric: str, debounce_seconds: float, min_deviation_count: int):
+        self.entity_id = entity_id
+        self.metric = metric
+        self.debounce_seconds = debounce_seconds
+        self.min_deviation_count = min_deviation_count
+        
+        # Debouncing state
+        self.last_deviation_time: Optional[datetime] = None
+        self.deviation_buffer: deque = deque(maxlen=min_deviation_count)
+        self.last_reported_value: Optional[float] = None
+        
+        # Feature accumulation (if needed per-entity)
+        self.accumulated_kpi: Optional[Dict] = None
+        self.kpi_timestamp: float = 0.0
+        
+        # ML Model
+        self.minirocket: Optional[MiniRocketRT] = None
+        if MINIROCKET_AVAILABLE:
+            try:
+                self.minirocket = MiniRocketRT(model_path=model_path, win=window_size)
+            except Exception as e:
+                logger.warning(f"[DEVIATION] Failed to load model for {entity_id}: {e}")
+                self.minirocket = None
+
+    def process_value(self, value: float, kpi_context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Process a new value and return a deviation event if detected."""
+        is_deviation = False
+        
+        if self.minirocket:
+            result = self.minirocket.push(value)
+            if result and result.get("pred") == 1:
+                is_deviation = True
+                if should_log(LOG_DEVIATION):
+                     logger.info(f"[DEVIATION] {self.entity_id}: ML detected deviation {self.metric}={value:.2f}")
+        else:
+            # Fallback threshold
+            threshold = 40.0 * 1.5
+            if value > threshold:
+                is_deviation = True
+
+        # Debouncing logic
+        self.deviation_buffer.append(is_deviation)
+        now = datetime.now(timezone.utc)
+        
+        should_report = False
+        if is_deviation and len(self.deviation_buffer) >= self.min_deviation_count:
+            if all(list(self.deviation_buffer)[-self.min_deviation_count:]):
+                if self.last_deviation_time is None:
+                    should_report = True
+                else:
+                    time_since_last = (now - self.last_deviation_time).total_seconds()
+                    if time_since_last >= self.debounce_seconds:
+                        should_report = True
+        
+        if should_report:
+            self.last_deviation_time = now
+            self.last_reported_value = value
+            return self._create_deviation_event(value, kpi_context)
+            
+        return None
+
+    def _create_deviation_event(self, value: float, kpi_context: Dict[str, Any]) -> Dict[str, Any]:
+        """Create deviation event dict."""
+        direction = "lower_better" if ("delay" in self.metric or "latency" in self.metric) else "higher_better"
+        
+        severity = "medium"
+        # Simple severity based on value (could be smarter)
+        if direction == "lower_better":
+             if value > 100: severity = "critical"
+             elif value > 50: severity = "high"
+        
+        scope = {
+            "cell_id": kpi_context.get("cell_id", "unknown"),
+            "region": "A",
+        }
+        if self.entity_id != "gnb":
+            scope["ue_id"] = self.entity_id
+            
+        return {
+            "source": "minirocket",
+            "metric": self.metric,
+            "value": value,
+            "baseline": None,
+            "target": None,
+            "direction": direction,
+            "severity": severity,
+            "confidence": 0.9,
+            "scope": scope,
+            "evidence_ref": f"telemetry://minirocket/{self.entity_id}/{self.metric}",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+
 class MinirocketAgent:
-    """Detects deviations using MiniRocket ML model."""
+    """Detects deviations using MiniRocket ML model (Multi-Entity)."""
     
     def __init__(self, bus, model_path: str = "models/minirocket.joblib", 
                  window_size: int = 128, metric: str = "delay_p95_ms",
                  debounce_seconds: float = 5.0, min_deviation_count: int = 3):
-        """
-        Args:
-            bus: MemBus instance
-            model_path: Path to trained MiniRocket model
-            window_size: Window size for MiniRocket (default: 128)
-            metric: Metric to monitor for deviations
-            debounce_seconds: Minimum seconds between deviation reports (default: 5.0)
-            min_deviation_count: Minimum consecutive deviations before reporting (default: 3)
-        """
+        
         self.bus = bus
         self.model_path = model_path
         self.window_size = window_size
@@ -45,31 +135,26 @@ class MinirocketAgent:
         self.debounce_seconds = debounce_seconds
         self.min_deviation_count = min_deviation_count
         
-        # Debouncing state
-        self.last_deviation_time: Optional[datetime] = None
-        self.deviation_buffer: deque = deque(maxlen=min_deviation_count)  # Track recent deviations
-        self.last_reported_value: Optional[float] = None
+        # Monitors: Key = Entity ID (e.g., "gnb", "UE_123")
+        self.monitors: Dict[str, DeviationMonitor] = {}
         
-        # Feature accumulation: merge KPIs from fragments (similar to ObserverBridge)
-        self.accumulated_kpis: Dict[str, Dict[str, Any]] = {}  # cell_id -> accumulated KPI
-        self.accumulation_timestamps: Dict[str, float] = {}  # cell_id -> last update time
-        self.accumulation_timeout = 2.0  # seconds - process after this timeout even if metric missing
+        # Helper to accumulate fragments if needed (mostly for gNB level)
+        self.accumulated_kpis: Dict[str, Dict] = {}
         
-        # Initialize MiniRocket if available
-        self.minirocket: Optional[MiniRocketRT] = None
-        if MINIROCKET_AVAILABLE:
-            try:
-                self.minirocket = MiniRocketRT(model_path=model_path, win=window_size)
-                if should_log(LOG_DEVIATION):
-                    logger.info(f"[DEVIATION] Loaded model from {model_path}")
-            except Exception as e:
-                if should_log(LOG_DEVIATION):
-                    logger.warning(f"[DEVIATION] Failed to load model: {e}, using fallback")
-                self.minirocket = None
-        else:
-            if should_log(LOG_DEVIATION):
-                logger.info("[DEVIATION] Using fallback threshold-based detection")
+        if should_log(LOG_DEVIATION):
+            logger.info(f"[DEVIATION] MinirocketAgent initialized for {metric}")
     
+    def _get_monitor(self, entity_id: str) -> DeviationMonitor:
+        """Get or create monitor for an entity."""
+        if entity_id not in self.monitors:
+            if should_log(LOG_DEVIATION):
+                logger.info(f"[DEVIATION] Creating new monitor for {entity_id}")
+            self.monitors[entity_id] = DeviationMonitor(
+                entity_id, self.model_path, self.window_size, 
+                self.metric, self.debounce_seconds, self.min_deviation_count
+            )
+        return self.monitors[entity_id]
+
     async def run(self):
         """Subscribe to KPI stream and detect deviations."""
         q = await self.bus.sub("kpi.raw")
@@ -80,186 +165,58 @@ class MinirocketAgent:
             if not kpi:
                 continue
             
-            # Accumulate features from fragments (similar to ObserverBridge)
-            cell_metrics = kpi.get("CellMetrics", {})
-            cell_id = cell_metrics.get("cell_id", "unknown")
-            current_time = datetime.now(timezone.utc).timestamp()
-            
-            # Initialize or update accumulated KPI for this cell
-            if cell_id not in self.accumulated_kpis:
-                self.accumulated_kpis[cell_id] = {
-                    "CellMetrics": cell_metrics.copy()
-                }
-                self.accumulation_timestamps[cell_id] = current_time
-            else:
-                # Merge new features into accumulated KPI
-                acc_cell_metrics = self.accumulated_kpis[cell_id]["CellMetrics"]
-                for key, value in cell_metrics.items():
-                    if value is not None:
-                        acc_cell_metrics[key] = value
-            
-            # Check if we have the metric we need
-            acc_cell_metrics = self.accumulated_kpis[cell_id]["CellMetrics"]
-            value = acc_cell_metrics.get(self.metric)
-            time_since_start = current_time - self.accumulation_timestamps[cell_id]
-            
-            # Process if we have the metric, or if timeout expired
-            if value is None and time_since_start < self.accumulation_timeout:
-                # Still waiting for metric - continue accumulating
-                continue
-            
-            # Use accumulated KPI
-            if value is None:
-                # Timeout expired but still no metric - skip this KPI
-                del self.accumulated_kpis[cell_id]
-                del self.accumulation_timestamps[cell_id]
-                continue
-            
-            value = float(value)
-            
-            # Get accumulated KPI before deleting
-            acc_kpi = {
-                "CellMetrics": self.accumulated_kpis[cell_id]["CellMetrics"].copy()
-            }
-            
-            # Clear accumulated KPI after processing
-            del self.accumulated_kpis[cell_id]
-            del self.accumulation_timestamps[cell_id]
-            
-            # Detect deviation
-            is_deviation = False
-            
-            if self.minirocket:
-                # Use MiniRocket ML model
-                result = self.minirocket.push(value)
-                if result and result.get("pred") == 1:  # 1 = deviation detected
-                    is_deviation = True
-                    if should_log(LOG_DEVIATION):
-                        logger.info(f"[DEVIATION] ML model detected deviation: {self.metric}={value:.2f}")
-                elif result:
-                    if should_log(LOG_DEVIATION):
-                        logger.debug(f"[DEVIATION] ML model prediction: {self.metric}={value:.2f}, pred={result.get('pred')}")
-            else:
-                # Fallback: simple threshold-based detection
-                # This is a placeholder - in real system, you'd have SLO targets
-                # For now, we'll use a simple heuristic
-                baseline = 40.0  # Default baseline
-                threshold = baseline * 1.2  # 20% above baseline
-                if value > threshold:
-                    is_deviation = True
-                    if should_log(LOG_DEVIATION):
-                        logger.info(f"[DEVIATION] Threshold detected deviation: {self.metric}={value:.2f} > {threshold:.2f}")
-                else:
-                    if should_log(LOG_DEVIATION):
-                        logger.debug(f"[DEVIATION] No deviation (threshold): {self.metric}={value:.2f} <= {threshold:.2f}")
-            
-            # Debouncing logic: only report if:
-            # 1. We have enough consecutive deviations (min_deviation_count)
-            # 2. Enough time has passed since last report (debounce_seconds)
-            # 3. Value has changed significantly from last reported value
-            now = datetime.now(timezone.utc)
-            
-            if is_deviation:
-                self.deviation_buffer.append(True)
-            else:
-                self.deviation_buffer.append(False)
-            
-            # Check if we should report
-            should_report = False
-            if is_deviation and len(self.deviation_buffer) >= self.min_deviation_count:
-                # Check if we have enough consecutive deviations
-                recent_deviations = list(self.deviation_buffer)[-self.min_deviation_count:]
-                if all(recent_deviations):
-                    # Check cooldown period
-                    if self.last_deviation_time is None:
-                        should_report = True
-                    else:
-                        time_since_last = (now - self.last_deviation_time).total_seconds()
-                        if time_since_last >= self.debounce_seconds:
-                            # Check if value has changed significantly (at least 1% or 0.1ms for delay)
-                            if self.last_reported_value is None:
-                                should_report = True
-                            else:
-                                change_pct = abs(value - self.last_reported_value) / max(abs(self.last_reported_value), 0.01)
-                                change_abs = abs(value - self.last_reported_value)
-                                # For delay metrics, use absolute change (0.1ms threshold)
-                                if "delay" in self.metric or "latency" in self.metric:
-                                    should_report = change_abs >= 0.1
-                                else:
-                                    should_report = change_pct >= 0.01  # 1% change
-            
-            if should_report:
-                deviation = self._create_deviation_event(acc_kpi, value, confidence=0.9)
-                # Publish deviation event
-                await self.bus.pub("deviation.detected", make_msg(
-                    "deviation.detected", "DEVIATION", "deviation.v1", deviation
-                ))
-                if should_log(LOG_DEVIATION):
-                    logger.info(f"[DEVIATION] Deviation detected: {self.metric}={value:.2f} (debounced)")
-                self.last_deviation_time = now
-                self.last_reported_value = value
-            else:
-                # Log why we're not reporting (for debugging)
-                if is_deviation:
-                    if len(self.deviation_buffer) < self.min_deviation_count:
-                        if should_log(LOG_DEVIATION):
-                            logger.debug(f"[DEVIATION] Deviation detected but buffer not full: {len(self.deviation_buffer)}/{self.min_deviation_count}")
-                    elif self.last_deviation_time and (now - self.last_deviation_time).total_seconds() < self.debounce_seconds:
-                        if should_log(LOG_DEVIATION):
-                            logger.debug(f"[DEVIATION] Deviation detected but in cooldown: {(now - self.last_deviation_time).total_seconds():.1f}s < {self.debounce_seconds}s")
-                    elif self.last_reported_value and abs(value - self.last_reported_value) < 0.1:
-                        if should_log(LOG_DEVIATION):
-                            logger.debug(f"[DEVIATION] Deviation detected but value change too small: {abs(value - self.last_reported_value):.3f}")
-                else:
-                    if should_log(LOG_DEVIATION):
-                        logger.debug(f"[DEVIATION] No deviation: {self.metric}={value:.2f} (baseline check)")
-    
-    def _create_deviation_event(self, kpi: Dict[str, Any], value: float, 
-                                confidence: float = 0.8) -> Dict[str, Any]:
-        """Create a deviation event from KPI data."""
+            # 1. Process gNB Level (CellMetrics)
+            # Only if this agent is configured for a gNB metric (simple check: not UE_ prefix)
+            if not self.metric.startswith("UE_"):
+                await self._process_gnb_metrics(kpi)
+                
+            # 2. Process UE Level (UEMetrics)
+            # Only if this agent is configured for a UE metric (simple check: starts with UE_)
+            if self.metric.startswith("UE_"):
+                await self._process_ue_metrics(kpi)
+
+    async def _process_gnb_metrics(self, kpi: Dict):
+        cell_metrics = kpi.get("CellMetrics", {})
+        value = cell_metrics.get(self.metric)
+        if value is not None:
+            # For gNB, we use "gnb" or cell_id as entity ID key
+            monitor = self._get_monitor("gnb")
+            deviation = monitor.process_value(float(value), cell_metrics)
+            if deviation:
+                await self._publish_deviation(deviation)
+
+    async def _process_ue_metrics(self, kpi: Dict):
+        ue_metrics_list = kpi.get("UEMetrics", [])
         cell_metrics = kpi.get("CellMetrics", {})
         
-        # Determine direction
-        direction = "lower_better" if ("delay" in self.metric or "latency" in self.metric) else "higher_better"
-        
-        # Calculate severity (simplified)
-        if direction == "lower_better":
-            # For latency: higher is worse
-            if value > 100:
-                severity = "critical"
-            elif value > 70:
-                severity = "high"
-            elif value > 50:
-                severity = "medium"
-            else:
-                severity = "low"
-        else:
-            # For throughput: lower is worse
-            if value < 10e6:
-                severity = "critical"
-            elif value < 20e6:
-                severity = "high"
-            elif value < 30e6:
-                severity = "medium"
-            else:
-                severity = "low"
-        
-        return {
-            "source": "minirocket",
-            "metric": self.metric,
-            "value": value,
-            "baseline": None,  # Could be calculated from history
-            "target": None,  # Will be set by reasoner based on SLO
-            "direction": direction,
-            "severity": severity,
-            "confidence": confidence,
-            "scope": {
-                "cell_id": cell_metrics.get("cell_id") or "CELL_001",
-                "region": "A",
-                "service": "demo",
-                "tenancy": "prod",
-            },
-            "evidence_ref": f"telemetry://minirocket/{self.metric}",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
+        for ue_metric_data in ue_metrics_list:
+            # UE ID is needed to scope the monitor
+            # XAppKPIAdapter puts it in "ue_id" key usually, or embedded in metric name key?
+            # Based on code, XAppKPIAdapter populates "ue_id" field.
+            ue_id = ue_metric_data.get("ue_id")
+            
+            # Also can try to extract from metric key per old adapter logic but explicit key is safer
+            if not ue_id: 
+                continue
+                
+            # Value for specific metric
+            value = ue_metric_data.get(self.metric)
+            if value is not None:
+                monitor = self._get_monitor(str(ue_id))
+                
+                # Context includes cell info
+                context = cell_metrics.copy()
+                context.update(ue_metric_data)
+                
+                deviation = monitor.process_value(float(value), context)
+                if deviation:
+                    await self._publish_deviation(deviation)
+
+    async def _publish_deviation(self, deviation: Dict):
+        await self.bus.pub("deviation.detected", make_msg(
+            "deviation.detected", "DEVIATION", "deviation.v1", deviation
+        ))
+        if should_log(LOG_DEVIATION):
+            entity = deviation["scope"].get("ue_id", "gNB")
+            logger.info(f"[DEVIATION] Published deviation for {entity}: {deviation['metric']}={deviation['value']:.2f}")
 

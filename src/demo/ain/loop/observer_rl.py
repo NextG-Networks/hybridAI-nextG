@@ -672,11 +672,12 @@ class RLObserver:
                     logger.info(f"[REWARD] Multi-metric reward (before action cost): {multi_reward:.6f}")
                 
                 # Apply action cost and clip
-                # UNCLAMPING: Widen clip range from 2.0 to 20.0 to fix saturation/vanishing gradient
-                # This allows the agent to distinguish between -7.0 (bad) and -6.0 (slightly better)
                 action_penalty = self.intent.action_cost * float(actions_len)
                 multi_reward -= action_penalty
-                multi_reward = float(np.clip(multi_reward, -20.0, 20.0))
+                
+                # Use configured clip range instead of hardcoded 20.0 to prevent gradient explosion
+                clip_val = self.intent.reward_clip
+                multi_reward = float(np.clip(multi_reward, -clip_val, clip_val))
                 
                 if should_log(LOG_REWARD):
                     logger.info(f"[REWARD] Multi-metric reward (after action cost {action_penalty:.4f}): {multi_reward:.6f}")
@@ -865,13 +866,37 @@ class RLObserver:
         start_time = time.time()
         
         if kpi_dict is not None:
-             kpi = kpi_dict
+             kpi_update = kpi_dict
         else:
-             kpi = self._read_latest_kpi()
+             kpi_update = self._read_latest_kpi()
         
-        if kpi is None:
+        if kpi_update is None:
             return None
 
+        # STATEFUL QUERY: Merge updates into persistent state to handle fragmented E2 messages
+        if not hasattr(self, 'known_kpi_state'):
+             from copy import deepcopy
+             self.known_kpi_state = deepcopy(kpi_update)
+        else:
+             # Merge CellMetrics (dictionaries)
+             if "CellMetrics" in kpi_update:
+                 if "CellMetrics" not in self.known_kpi_state:
+                     self.known_kpi_state["CellMetrics"] = {}
+                 self.known_kpi_state["CellMetrics"].update(kpi_update["CellMetrics"])
+             
+             # Merge UEMetrics (list replacement?) or recursive?
+             # For now, just replace list-based fields and others
+             for k, v in kpi_update.items():
+                 if k != "CellMetrics":
+                     self.known_kpi_state[k] = v
+        
+        # Use the accumulated full state for processing
+        kpi = self.known_kpi_state
+
+        # STABILIZATION: Initialize counter if needed
+        if not hasattr(self, 'steps_since_action'):
+            self.steps_since_action = 0
+            
         # Extract features and check completeness
         row, completeness = self._extract_features_row(kpi)
         
@@ -914,10 +939,25 @@ class RLObserver:
                 self._update_context_history(context)
 
         s2 = self._update_window(row)  # [W, F] - already cleaned (no NaN values)
+        
+        # STABILIZATION: Time-based check
+        if not hasattr(self, 'last_action_time'):
+            self.last_action_time = 0
+            
+        current_time = time.time()
+        time_since_action = current_time - self.last_action_time
+        stabilization_period = 2.0 # Reduced from 20.0s to accelerate training
+        
+        if time_since_action < stabilization_period:
+            if should_log(LOG_OBSERVER) and self.steps_since_action % 10 == 0:
+                 # Log periodically
+                 logger.debug(f"[OBSERVER] Stabilizing network: {time_since_action:.1f}/{stabilization_period}s")
+            self.steps_since_action += 1 # Keep for logging stats if needed or just remove
+            return None # Hold current action
 
         # If we have a previous KPI, compute reward and push to replay
         if self.last_kpi_raw is not None and self.last_state_win is not None and last_playbook is not None:
-            s = self.last_state_win  # previous window [W, F]
+            s = self.last_state_win  # previous window [W, F] (from BEFORE stabilization wait)
             
             t0 = time.time()
             # Enhanced reward calculation
@@ -943,11 +983,10 @@ class RLObserver:
             t_push = time.time() - t0
             
             t0 = time.time()
-            # OPTIMIZATION: Only train every 10 steps to prevent CPU bottleneck
-            # The 'learn' step takes ~0.2-0.7s, which causes lag if run every step (1Hz+)
-            # Using replay buffer size as a proxy for step count ensures we space out training
-            if len(self.predictor.replay) % 10 == 0:
-                self.predictor.learn_step()
+            # OPTIMIZATION: Only train every 10 steps (check replay size or counter) -> actually we trigger every action now (every 5s)
+            # Since we only run this block every 5s, we can afford to train every time!
+            # It takes ~0.2s, which is fine every 5s.
+            self.predictor.learn_step()
             t_learn = time.time() - t0
             
             # Log slow operations (adjusted threshold for learn since we expect it to be slower when it runs)
@@ -960,6 +999,8 @@ class RLObserver:
         from copy import deepcopy
         self.last_kpi_raw = deepcopy(kpi)
         self.last_state_win = s2.copy()  # Store cleaned state window
+        self.steps_since_action = 0 # Reset counter after acting
+        self.last_action_time = time.time() # Reset stabilization timer
         
         total_time = time.time() - start_time
         if total_time > 0.5:

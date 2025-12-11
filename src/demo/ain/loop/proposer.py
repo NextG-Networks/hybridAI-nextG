@@ -23,7 +23,7 @@ except ImportError:
 
 PLAYBOOK_K = 3         # actions per playbook
 CANDIDATE_N = 5        # number of candidate playbooks per decision
-COOLDOWN_STEPS = 3     # cooldown per (type, scope, entity)
+COOLDOWN_STEPS = 1     # cooldown per (type, scope, entity)
 
 ActionType = str   # {"SCHEDULER_POLICY","MCS_CAP","PRB_WEIGHT","SLICE_QOS","TX_POWER","POWER_CONTROL","REPORTING"}
 ScopeType = str    # {"CELL","UE","SLICE"}
@@ -82,20 +82,20 @@ class ActionSpace:
     slices: List[str]
     
     def all_atomic_actions(self) -> List[ControlAction]:
-        """Generate all possible atomic actions from defined ranges."""
+        """Generate all possible atomic actions from defined ranges.
+        RESTRICTED: Only MCS_CAP, TX_POWER, and PRB_WEIGHT are supported.
+        """
         acts: List[ControlAction] = []
         
         # Generate MCS and TX power values from ranges
         mcs_values = generate_mcs_values()
         prb_weight_values = generate_weight_values(PRB_WEIGHT_MIN, PRB_WEIGHT_MAX, PRB_WEIGHT_STEP)
-        slice_weight_values = generate_weight_values(SLICE_WEIGHT_MIN, SLICE_WEIGHT_MAX, SLICE_WEIGHT_STEP)
+        # slice_weight_values removed (SLICE_QOS not supported)
         tx_power_values = generate_tx_power_values()
         
         # Cell-level actions
         for c in self.cells:
-            # Scheduler policies (discrete choices)
-            for pol in SCHEDULER_POLICIES:
-                acts.append(ControlAction("SCHEDULER_POLICY", "CELL", cell_id=c, params={"policy": pol}))
+            # REMOVED: SCHEDULER_POLICY (not supported)
             
             # MCS Cap (from range)
             for m in mcs_values:
@@ -111,11 +111,9 @@ class ActionSpace:
             for w in prb_weight_values:
                 acts.append(ControlAction("PRB_WEIGHT", "SLICE", slice_id=s, params={"weight": w}))
             
-            # Slice QoS Weight (from range)
-            for w in slice_weight_values:
-                acts.append(ControlAction("SLICE_QOS", "SLICE", slice_id=s, params={"weight": w}))
+            # REMOVED: SLICE_QOS (not supported)
         
-        # Include a NOOP-like action
+        # Include a NOOP-like action (kept for safety/fallback)
         acts.append(ControlAction("REPORTING", "CELL", params={"noop": True}))
         return acts
 
@@ -235,148 +233,31 @@ class CacheLibrary:
 # -----------------------------
 
 class ContextualActionWeights:
-    """Calculate action weights based on network context."""
+    """Calculate action weights based on network context.
+    
+    NOTE: Heuristics have been disabled to allow for pure specific RL learning.
+    This class now returns uniform weights to ensure unbiased exploration.
+    """
     
     def __init__(self):
         # Define context-action weight mappings
-        self.situation_weights = {
-            "high_latency": {
-                ("SCHEDULER_POLICY", "MAX_THROUGHPUT"): 3.0,
-                ("SCHEDULER_POLICY", "PF"): 1.5,
-                ("SCHEDULER_POLICY", "RR"): 0.8,
-                ("MCS_CAP", 22): 2.0,
-                ("MCS_CAP", 18): 1.5,
-                ("MCS_CAP", 14): 1.0,
-                ("PRB_WEIGHT", 1.2): 1.8,
-                ("PRB_WEIGHT", 1.0): 1.0,
-                ("PRB_WEIGHT", 0.8): 0.7,
-                ("TX_POWER", 52.0): 2.0,
-                ("TX_POWER", 49.0): 1.8,
-                ("TX_POWER", 46.0): 1.2,
-                ("TX_POWER", 43.0): 0.9,
-                ("TX_POWER", 40.0): 0.7,
-            },
-            "low_throughput": {
-                ("SCHEDULER_POLICY", "PF"): 2.5,
-                ("SCHEDULER_POLICY", "MAX_THROUGHPUT"): 1.8,
-                ("SCHEDULER_POLICY", "RR"): 1.0,
-                ("MCS_CAP", 22): 2.2,
-                ("MCS_CAP", 18): 1.8,
-                ("MCS_CAP", 14): 0.8,
-                ("PRB_WEIGHT", 1.2): 3.0,
-                ("PRB_WEIGHT", 1.0): 1.5,
-                ("PRB_WEIGHT", 0.8): 0.5,
-                ("TX_POWER", 52.0): 2.2,
-                ("TX_POWER", 49.0): 2.0,
-                ("TX_POWER", 46.0): 1.3,
-                ("TX_POWER", 43.0): 0.9,
-                ("TX_POWER", 40.0): 0.7,
-            },
-            "high_error_rate": {
-                ("SCHEDULER_POLICY", "PF"): 2.0,
-                ("SCHEDULER_POLICY", "RR"): 1.5,
-                ("SCHEDULER_POLICY", "MAX_THROUGHPUT"): 1.0,
-                ("MCS_CAP", 14): 3.0,
-                ("MCS_CAP", 18): 2.0,
-                ("MCS_CAP", 22): 0.5,
-                ("PRB_WEIGHT", 1.2): 1.8,
-                ("PRB_WEIGHT", 1.0): 1.2,
-                ("PRB_WEIGHT", 0.8): 0.8,
-                ("TX_POWER", 52.0): 1.8,
-                ("TX_POWER", 49.0): 1.6,
-                ("TX_POWER", 46.0): 1.2,
-                ("TX_POWER", 43.0): 1.0,
-                ("TX_POWER", 40.0): 0.9,
-            },
-            "high_load": {
-                ("SCHEDULER_POLICY", "PF"): 2.5,
-                ("SCHEDULER_POLICY", "RR"): 1.2,
-                ("SCHEDULER_POLICY", "MAX_THROUGHPUT"): 1.5,
-                ("PRB_WEIGHT", 1.2): 2.0,
-                ("PRB_WEIGHT", 1.0): 1.5,
-                ("PRB_WEIGHT", 0.8): 0.5,
-                ("MCS_CAP", 18): 1.5,
-                ("MCS_CAP", 22): 1.2,
-                ("MCS_CAP", 14): 1.0,
-                ("TX_POWER", 40.0): 1.5,
-                ("TX_POWER", 43.0): 1.3,
-                ("TX_POWER", 46.0): 1.0,
-                ("TX_POWER", 49.0): 0.8,
-                ("TX_POWER", 52.0): 0.6,
-            },
-            "poor_quality": {
-                ("SCHEDULER_POLICY", "PF"): 2.2,
-                ("SCHEDULER_POLICY", "RR"): 1.8,
-                ("SCHEDULER_POLICY", "MAX_THROUGHPUT"): 1.0,
-                ("MCS_CAP", 14): 2.5,
-                ("MCS_CAP", 18): 2.0,
-                ("MCS_CAP", 22): 1.0,
-                ("PRB_WEIGHT", 1.0): 1.5,
-                ("PRB_WEIGHT", 1.2): 1.2,
-                ("PRB_WEIGHT", 0.8): 1.0,
-                ("TX_POWER", 52.0): 2.5,
-                ("TX_POWER", 49.0): 2.2,
-                ("TX_POWER", 46.0): 1.5,
-                ("TX_POWER", 43.0): 1.0,
-                ("TX_POWER", 40.0): 0.8,
-            },
-            "normal": {
-                # Balanced weights for normal conditions
-                ("SCHEDULER_POLICY", "PF"): 1.5,
-                ("SCHEDULER_POLICY", "MAX_THROUGHPUT"): 1.2,
-                ("SCHEDULER_POLICY", "RR"): 1.0,
-                ("MCS_CAP", 18): 1.5,
-                ("MCS_CAP", 22): 1.2,
-                ("MCS_CAP", 14): 1.0,
-                ("PRB_WEIGHT", 1.0): 1.5,
-                ("PRB_WEIGHT", 1.2): 1.2,
-                ("PRB_WEIGHT", 0.8): 1.0,
-                ("TX_POWER", 46.0): 1.5,
-                ("TX_POWER", 49.0): 1.3,
-                ("TX_POWER", 43.0): 1.2,
-                ("TX_POWER", 52.0): 1.1,
-                ("TX_POWER", 40.0): 1.0,
-            }
-        }
+        # Disabled manual heuristics to allow "propose whatever and learn" behavior
+        self.situation_weights = {}
 
     def get_action_weight(self, action: ControlAction, situation: str) -> float:
-        """Get weight for specific action in given situation."""
-        situation_map = self.situation_weights.get(situation, self.situation_weights["normal"])
+        """Get weight for specific action in given situation.
         
-        # Create action signature for lookup
-        if action.type == "SCHEDULER_POLICY":
-            policy = action.params.get("policy", "PF")
-            key = ("SCHEDULER_POLICY", policy)
-        elif action.type == "MCS_CAP":
-            mcs = action.params.get("dl_mcs_max", 18)
-            key = ("MCS_CAP", mcs)
-        elif action.type == "PRB_WEIGHT":
-            weight = action.params.get("weight", 1.0)
-            key = ("PRB_WEIGHT", weight)
-        elif action.type == "SLICE_QOS":
-            weight = action.params.get("weight", 1.0)
-            key = ("SLICE_QOS", weight)
-        elif action.type in ("TX_POWER", "POWER_CONTROL"):
-            tx_power = action.params.get("txPowerDbm") or action.params.get("tx_power_dbm")
-            if tx_power is None:
-                return 1.0  # Default weight if missing
-            key = ("TX_POWER", float(tx_power))
-        else:
-            return 1.0  # Default weight for unknown actions
-        
-        return situation_map.get(key, 1.0)
+        Returns 1.0 for all actions to ensure uniform sampling (unbiased exploration).
+        """
+        return 1.0
 
     def get_weighted_actions(self, all_actions: List[ControlAction], situation: str) -> List[ControlAction]:
-        """Get weighted action list for contextual sampling."""
-        weighted_actions = []
+        """Get weighted action list for contextual sampling.
         
-        for action in all_actions:
-            weight = self.get_action_weight(action, situation)
-            # Repeat actions based on weight (higher weight = more likely to be selected)
-            repeat_count = max(1, int(weight * 10))  # Scale weights to reasonable range
-            weighted_actions.extend([action] * repeat_count)
-        
-        return weighted_actions
+        Since weights are uniform, this simply returns the original list 
+        (or a uniformly scaled version, but we just return original for efficiency).
+        """
+        return all_actions # Return raw actions for uniform sampling
 
 # -----------------------------
 # Enhanced Proposer-side sampler with contextual intelligence
@@ -405,15 +286,19 @@ class ProposerSampler:
             actions = []
             all_acts = action_space.all_atomic_actions()
             tries = 0
-            while len(actions) < K and tries < 50:
+            # VARIABLE LENGTH: Randomly choose 1 to K actions (e.g., 1-3)
+            # This avoids "weird" consistent 3-command blocks
+            target_k = random.randint(1, K)
+            
+            while len(actions) < target_k and tries < 50:
                 a = random.choice(all_acts)
                 if violates_cooldown(a, cooldown_clock):
                     tries += 1; continue
                 if any(conflict(a, b) for b in actions):
                     tries += 1; continue
                 actions.append(a)
-            if len(actions) < K:
-                actions += [ControlAction("REPORTING","CELL",params={"noop":True})] * (K - len(actions))
+            
+            # No padding with NOOPs - we want concise playbooks
             return Playbook(actions)
 
         # Seeds (with mutation probability)
@@ -471,7 +356,10 @@ class ProposerSampler:
                 weighted_acts = all_acts
             
             tries = 0
-            while len(actions) < K and tries < 50:
+            # VARIABLE LENGTH: Randomly choose 1 to K actions (e.g., 1-3)
+            target_k = random.randint(1, K)
+            
+            while len(actions) < target_k and tries < 50:
                 a = random.choice(weighted_acts)
                 if violates_cooldown(a, cooldown_clock):
                     tries += 1; continue
@@ -480,10 +368,7 @@ class ProposerSampler:
                 actions.append(a)
                 tries = 0  # Reset tries on successful addition
             
-            # Fill remaining slots with NOOP if needed
-            if len(actions) < K:
-                actions += [ControlAction("REPORTING","CELL",params={"noop":True})] * (K - len(actions))
-            
+            # No padding with NOOPs
             return Playbook(actions)
 
         def contextual_mutate_playbook(pb: Playbook) -> Playbook:

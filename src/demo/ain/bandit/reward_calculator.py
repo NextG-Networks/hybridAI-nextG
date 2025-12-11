@@ -111,6 +111,12 @@ class SLORewardCalculator:
             total_improvement += improvement * weight * 100.0
             total_violation += violation * weight
             weight_sum += weight
+            
+            # NEW: Add explicit improvement bonus for any positive change
+            # This prevents learned helplessness from always-negative rewards
+            if improvement > 0:
+                improvement_bonus = 0.5 * improvement * weight  # 50% bonus for improvements
+                total_improvement += improvement_bonus
         
         if weight_sum > 0:
             # Average improvement and violation across all metrics

@@ -11,3 +11,4 @@ poetry.lock
 models/
 data/
 playbooks/
+kpms.csv

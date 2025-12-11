@@ -23,13 +23,13 @@ from ain.loop.model_defs import SlateDQNetwork
 # -----------------------------
 
 GAMMA = 0.99 # Discount factor (closer to one means longterm learning, lower means short term learning)
-LR = 1e-3
-BATCH_SIZE = 32  # Changed from 1 to 64 for stable learning (needs at least 64 samples in replay buffer)
+LR = 1e-4
+BATCH_SIZE = 128  # Increased from 64 to 128 for more stable gradients with Huber loss
 REPLAY_CAP = 100000
-TAU = 0.005 # Target network soft update rate
-EPS_START = 0.2 # Exploration vs exploitation
-EPS_END = 0.05
-EPS_DECAY_STEPS = 20000
+TAU = 0.001 # Target network soft update rate
+EPS_START = 0.5 # Exploration vs exploitation
+EPS_END = 0.1  # Increased from 0.05 to maintain exploration in non-stationary environment
+EPS_DECAY_STEPS = 30000  # Slower decay to handle traffic spikes and random events
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu") # Use GPU if available
 # -----------------------------
@@ -225,7 +225,9 @@ class SlateDQNPredictor:
             # Clip targets as well
             y = torch.clamp(y, min=-10.0, max=10.0)
 
-        loss = F.mse_loss(q, y)
+        # Use Huber loss (smooth_l1_loss) instead of MSE for robustness to outliers
+        # This prevents gradient explosion from extreme reward values
+        loss = F.smooth_l1_loss(q, y)
         
         # Check for NaN loss
         if torch.isnan(loss) or torch.isinf(loss):

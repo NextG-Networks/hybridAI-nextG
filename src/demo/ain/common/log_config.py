@@ -5,10 +5,11 @@ Log categories:
 1 = LEARNING - Model training, loss, Q-values, replay buffer
 2 = INTENT - Intent creation and updates
 3 = SCORING/PLAYBOOK - Q-value scoring, playbook generation
-4 = DEVIATION/COMMANDS - Deviation detection, command execution
+4 = DEVIATION - Deviation detection
 5 = OBSERVER - State window generation, feature completeness
 6 = REWARD - Reward computation details
 7 = KPI - Low-level KPI I/O (message reception, node_id extraction)
+8 = COMMANDS - Command execution details
 """
 
 import logging
@@ -22,6 +23,7 @@ LOG_DEVIATION = 4
 LOG_OBSERVER = 5
 LOG_REWARD = 6
 LOG_KPI = 7
+LOG_COMMANDS = 8
 
 # Category names for display
 CATEGORY_NAMES = {

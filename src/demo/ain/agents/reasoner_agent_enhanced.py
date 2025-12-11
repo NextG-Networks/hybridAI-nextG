@@ -9,6 +9,7 @@ Adaptive Reasoner Agent with Static SLOs and Baseline Learning
 import asyncio
 import logging
 import json
+import re
 from pathlib import Path
 from typing import Dict, Any, Optional
 import numpy as np
@@ -78,13 +79,28 @@ class SLOConfig:
         except Exception as e:
             logger.error(f"[SLO] Error loading SLO file: {e}", exc_info=True)
     
+    
     def get_slo(self, metric: str) -> Optional[Dict[str, Any]]:
-        """Get SLO configuration for a metric."""
-        return self.slos.get(metric)
+        """Get SLO configuration for a metric (supports regex)."""
+        # 1. Exact match
+        if metric in self.slos:
+            return self.slos[metric]
+        
+        # 2. Regex match
+        for key, config in self.slos.items():
+            # If key contains regex special chars, try matching
+            if any(c in key for c in "*?+^$[](){}|\\"):
+                try:
+                    # Anchor match to ensure full string or intended pattern
+                    if re.fullmatch(key, metric):
+                        return config
+                except re.error:
+                    continue
+        return None
     
     def is_metric_tracked(self, metric: str) -> bool:
         """Check if metric has an SLO defined."""
-        return metric in self.slos
+        return self.get_slo(metric) is not None
     
     def meets_slo(self, metric: str, value: float) -> bool:
         """Check if current value meets SLO target."""
@@ -172,6 +188,15 @@ class BaselineLearner:
         return False
 
 
+from enum import Enum, auto
+
+class IntentState(Enum):
+    MONITORING = auto()
+    ACTIVATING = auto()
+    ASSURANCE = auto()
+    WITHDRAWAL = auto()
+
+
 class EnhancedReasonerAgent:
     """
     Reasoner that uses static SLOs and learned baseline for context-aware intent creation.
@@ -198,6 +223,9 @@ class EnhancedReasonerAgent:
         self.current_intent: Optional[Dict[str, Any]] = None
         self.active_intent_id: Optional[str] = None
         
+        # State Machine
+        self.state = IntentState.MONITORING
+        
         # Static SLO configuration
         self.slo_config = SLOConfig(slo_file=slo_file)
         
@@ -217,48 +245,82 @@ class EnhancedReasonerAgent:
             deviation = msg.payload
             metric = deviation.get("metric")
             value = deviation.get("value")
+            scope = deviation.get("scope", {})
             
-            if should_log(LOG_INTENT):
-                logger.info(f"[INTENT] Received deviation: {metric}={value:.2f}, severity={deviation.get('severity')}")
+            if should_log(LOG_INTENT) and self.state == IntentState.MONITORING:
+                logger.debug(f"[INTENT] Received deviation in MONITORING: {metric}={value:.2f}")
             
             # Check if metric has SLO defined
             slo = self.slo_config.get_slo(metric)
             if not slo:
-                if should_log(LOG_INTENT):
-                    logger.debug(f"[INTENT] No SLO defined for {metric} - skipping")
                 continue
             
             # Add to baseline learner for context
             self.baseline_learner.add_observation(metric, value)
             
-            # Check if current value meets SLO
-            if self.slo_config.meets_slo(metric, value):
-                if should_log(LOG_INTENT):
-                    logger.info(f"[INTENT] Value meets SLO (metric={metric}, value={value:.2f} <= target={slo['target']:.2f}) - skipping")
-                continue
+            # --- State Machine Logic ---
             
-            # Value doesn't meet SLO - check if optimization is possible
-            baseline = self.baseline_learner.get_baseline(metric)
-            if baseline:
-                # Check if environment is already optimal (can't optimize further)
-                if self.baseline_learner.is_environment_optimal(metric, value, slo["direction"]):
-                    if should_log(LOG_INTENT):
-                        logger.warning(f"[INTENT] SLO violation but environment already optimal "
-                                     f"(metric={metric}, value={value:.2f}, SLO={slo['target']:.2f}) - "
-                                     f"creating intent anyway (SLO may be too aggressive)")
+            # 1. MONITORING State
+            if self.state == IntentState.MONITORING:
+                if not self.slo_config.meets_slo(metric, value):
+                    # Check optimization potential
+                    baseline = self.baseline_learner.get_baseline(metric)
+                    is_optimal = False
+                    if baseline:
+                        is_optimal = self.baseline_learner.is_environment_optimal(metric, value, slo["direction"])
+                    
+                    if is_optimal:
+                        if should_log(LOG_INTENT):
+                            logger.warning(f"[INTENT] SLO violation but environment optimal. Staying in MONITORING.")
+                    else:
+                        logger.info(f"[STATE] MONITORING -> ACTIVATING (SLO violation: {metric}={value:.2f})")
+                        self.state = IntentState.ACTIVATING
+            
+            # 2. ACTIVATING State (Transient)
+            if self.state == IntentState.ACTIVATING:
+                await self._create_intent_from_slo(metric, value, slo, scope)
+                logger.info(f"[STATE] ACTIVATING -> ASSURANCE")
+                self.state = IntentState.ASSURANCE
+            
+            # 3. ASSURANCE State
+            if self.state == IntentState.ASSURANCE:
+                # Check if we are satisfying the CURRENT intent
+                if self.current_intent and self.current_intent.get("metric") == metric:
+                    if self.slo_config.meets_slo(metric, value):
+                        logger.info(f"[STATE] ASSURANCE -> WITHDRAWAL (SLO met: {metric}={value:.2f})")
+                        self.state = IntentState.WITHDRAWAL
+                    else:
+                        # Still optimizing
+                        if should_log(LOG_INTENT):
+                             logger.debug(f"[INTENT] ASSURANCE: Ensuring {metric} (current={value:.2f}, target={slo['target']})")
                 else:
+                    # Metric mismatch or no intent? specific edge case, stay or reset
+                    # If we receive deviation for a DIFFERENT metric, ideally queue it or ignore?
+                    # For now, ignore deviations for other metrics while ensuring one.
+                    pass
+
+            # 4. WITHDRAWAL State (Transient)
+            if self.state == IntentState.WITHDRAWAL:
+                if self.current_intent:
                     if should_log(LOG_INTENT):
-                        logger.info(f"[INTENT] SLO violation detected (metric={metric}, value={value:.2f} > target={slo['target']:.2f})")
+                        logger.info(f"[INTENT] Clearing satisfied intent for {self.current_intent.get('metric')}")
+                    
+                    self.current_intent = None
+                    self.active_intent_id = None
+                    
+                    # Publish empty/clear intent
+                    await self.bus.pub("intent.current", make_msg(
+                        "intent.current", "INTENT", "intent.v1", {}
+                    ))
+                
+                logger.info(f"[STATE] WITHDRAWAL -> MONITORING")
+                self.state = IntentState.MONITORING
             
-            # Check if we already have an active intent for this metric
-            if self.current_intent and self.current_intent.get("metric") == metric:
-                current_target = self.current_intent.get("target")
-                # Only update if SLO target is different
-                if abs(slo["target"] - current_target) / max(abs(current_target), 0.001) < 0.01:
-                    continue  # SLO target hasn't changed
-            
-            # Create intent to meet SLO
-            await self._create_intent_from_slo(metric, value, slo)
+            # --- Visualization ---
+            if should_log(LOG_INTENT) and self.state != IntentState.MONITORING:
+                active_intents = [self.current_intent] if self.current_intent else []
+                # Simple visualization of active intents
+                logger.info(f"[INTENT] Active Intents: {json.dumps(active_intents, default=str)}")
     
     async def _learn_baseline_from_kpis(self, q):
         """Continuously learn baseline from KPI stream."""
@@ -273,7 +335,7 @@ class EnhancedReasonerAgent:
                 if value is not None:
                     self.baseline_learner.add_observation(metric, float(value))
     
-    async def _create_intent_from_slo(self, metric: str, value: float, slo: Dict[str, Any]):
+    async def _create_intent_from_slo(self, metric: str, value: float, slo: Dict[str, Any], scope: Dict[str, Any] = None):
         """Create and publish intent to meet SLO target."""
         try:
             # Determine intent type
@@ -305,6 +367,7 @@ class EnhancedReasonerAgent:
                 "direction": rl_intent.direction,
                 "type": rl_intent.type,
                 "slo_id": slo.get("slo_id"),
+                "scope": scope or {},
             }
             self.active_intent_id = self.current_intent["intent_id"]
             
@@ -322,6 +385,7 @@ class EnhancedReasonerAgent:
                     "direction": rl_intent.direction,
                     "action_cost": rl_intent.action_cost,
                     "reward_clip": rl_intent.reward_clip,
+                    "scope": scope or {},
                 }
             ))
             

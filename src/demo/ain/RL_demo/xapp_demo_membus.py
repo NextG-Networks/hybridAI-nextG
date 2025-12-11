@@ -48,6 +48,7 @@ import logging
 from ain.common.log_config import (
     set_log_levels, parse_log_levels, should_log, log_if_enabled,
     LOG_LEARNING, LOG_INTENT, LOG_SCORING, LOG_DEVIATION, LOG_OBSERVER, LOG_REWARD, LOG_KPI,
+    LOG_COMMANDS,
     CATEGORY_NAMES
 )
 
@@ -127,6 +128,10 @@ class XAppKPIAdapter:
                 
                 if ue_metric:
                     ue_metrics.append(ue_metric)
+        
+        # Debug logging
+        if should_log(LOG_KPI):
+            logger.debug(f"[KPI] Converted xApp KPI: CellMetrics keys={list(cell_metrics.keys())}, UEMetrics count={len(ue_metrics)}")
         
         if measurements:
             for m in measurements:
@@ -847,6 +852,16 @@ class XAppTCPServer:
             # Add timeout to prevent hanging
             await asyncio.wait_for(writer.drain(), timeout=2.0)
             logger.info(f"Sent command to {client_id}: {command.get('cmd', {}).get('cmd', 'unknown')}")
+            
+            # Publish command to membus for dashboard
+            await self.bus.pub("command.sent", make_msg(
+                "command.sent", "COMMAND", "command.v1", {
+                    "command": command.get('cmd', {}).get('cmd', 'unknown'),
+                    "params": command.get('cmd', {}),
+                    "client_id": client_id
+                }
+            ))
+            
             return True
         except asyncio.TimeoutError:
             logger.error(f"Timeout sending command to {client_id} - connection may be broken")
@@ -943,16 +958,22 @@ class XAppActorAgent:
                         # Use meid from map if available
                         meid = self.tcp_server.meid_map.get(client_id, self.default_meid)
                         # Update commands with correct meid
+                        # Update commands with correct meid
                         for i, cmd in enumerate(commands):
                             cmd["meid"] = meid
-                            logger.info(f"Sending command {i+1}/{len(commands)}: {cmd.get('cmd', {}).get('cmd', 'unknown')} to node {cmd.get('cmd', {}).get('node', 'unknown')}")
+                            
+                            if should_log(LOG_COMMANDS):
+                                logger.info(f"Sending command {i+1}/{len(commands)}: {cmd.get('cmd', {}).get('cmd', 'unknown')} to node {cmd.get('cmd', {}).get('node', 'unknown')}")
+                            
                             success = await self.tcp_server.send_command(client_id, cmd)
                             if not success:
                                 logger.error(f"Failed to send command to {client_id}")
+                            
                             # Add 2 second cooldown between commands (except for the last one)
                             if i < len(commands) - 1:
-                                logger.info(f"Waiting 2 seconds before next command...")
-                                await asyncio.sleep(2.0)
+                                if should_log(LOG_COMMANDS):
+                                    logger.info(f"Waiting 5 seconds before next command...")
+                                await asyncio.sleep(10.0)
             else:
                 logger.warning("No commands generated from playbook")
             
@@ -1274,6 +1295,17 @@ class ObserverBridge:
                         # Log before calling observer.step() to diagnose
                         if should_log(LOG_OBSERVER):
                             logger.debug(f"[OBSERVER] Calling observer.step() with completeness={completeness:.1%}, buf_size={len(self.observer.buf)}/{self.observer.window}")
+                        
+                        # FORCE LOG (INFO) to diagnose
+                        if should_log(LOG_OBSERVER):
+                            logger.info(f"[OBSERVER-DEBUG] CellMetrics keys: {list(acc_kpi.get('CellMetrics', {}).keys())}")
+                            # Inspect the specific target metric
+                            tgt = "DRB_PdcpSduDelayDl"
+                            if tgt in acc_kpi.get("CellMetrics", {}):
+                                logger.info(f"[OBSERVER-DEBUG] {tgt} = {acc_kpi['CellMetrics'][tgt]}")
+                            else:
+                                logger.info(f"[OBSERVER-DEBUG] {tgt} NOT FOUND in CellMetrics")
+                            
                         # Pass kpi_dict directly to avoid file I/O latency
                         state = self.observer.step(self.last_playbook, kpi_dict=acc_kpi)
                         if state is not None:
@@ -1541,6 +1573,12 @@ async def run_ai_loop_with_membus(
     else:
         loss_history_path = f"models/loss_history_{model_type}.json"
     
+    # Load loss history if it exists to preserve continuity
+    if predictor.load_loss_history(loss_history_path):
+        logger.info(f"✓ Resumed loss history from {loss_history_path} ({len(predictor.loss_history)} entries)")
+    else:
+        logger.info(f"Starting new loss history at {loss_history_path}")
+    
     async def periodic_checkpoint_saver():
         """Periodically save checkpoint every 50 steps."""
         while True:
@@ -1577,7 +1615,23 @@ async def run_ai_loop_with_membus(
         for name, agent in minirocket_agents
     ]
     
-    tasks = minirocket_tasks + [
+    # Import and start dashboard
+    try:
+        from ain.dashboard.dashboard_server import start_dashboard
+        from ain.dashboard.http_server import start_http_server
+        
+        dashboard_static = Path(__file__).parent.parent / "dashboard" / "static"
+        
+        dashboard_tasks = [
+            asyncio.create_task(start_dashboard(bus, port=8081), name="dashboard_websocket"),
+            asyncio.create_task(start_http_server(dashboard_static, port=8080), name="dashboard_http"),
+        ]
+        logger.info("[DASHBOARD] Dashboard enabled - HTTP: http://localhost:8080, WebSocket: ws://localhost:8081")
+    except ImportError as e:
+        logger.warning(f"[DASHBOARD] Dashboard not available: {e}")
+        dashboard_tasks = []
+    
+    tasks = minirocket_tasks + dashboard_tasks + [
         asyncio.create_task(reasoner_agent.run(), name="reasoner_agent"),
         asyncio.create_task(proposer_agent.run(), name="proposer_agent"),
         asyncio.create_task(predictor_agent.run(), name="predictor_agent"),
