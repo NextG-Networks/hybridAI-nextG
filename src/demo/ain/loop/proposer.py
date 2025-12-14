@@ -1,9 +1,10 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional, Any
+from typing import List, Dict, Any, Tuple, Optional, Set
 import random
 import logging
-import numpy as np
+import math
+from ain.common.log_config import should_log, LOG_BANDIT
 from ain.common.types import ControlAction, Playbook
 
 logger = logging.getLogger(__name__)
@@ -154,9 +155,42 @@ class CacheLibrary:
         self.context_store: Dict[str, List[Tuple[Playbook, float, str]]] = {}  # (playbook, score, situation)
 
     def key(self, intent_meta: Dict[str,Any]) -> str:
+        # Debugging key mismatch
         scope = intent_meta.get("scope","GLOBAL")
-        intent = intent_meta.get("intent","LATENCY_P95")
-        return f"{intent}:{scope}"
+        # Handle dict scope (convert to string representation or extract ID)
+        if isinstance(scope, dict):
+             # Simplified scope handling for key matching
+             # If scope has 'cell_id', use that. Else 'GLOBAL'
+             if 'cell_id' in scope:
+                 cid = scope['cell_id']
+                 if not str(cid).startswith('CELL_'):
+                     scope = f"CELL_{cid}"
+                 else:
+                     scope = cid
+             elif 'slice_id' in scope:
+                 sid = scope['slice_id']
+                 if not str(sid).startswith('SLICE_'):
+                     scope = f"SLICE_{sid}"
+                 else:
+                     scope = sid
+             else:
+                 scope = "GLOBAL"
+        
+        intent = intent_meta.get("intent")
+        # If 'intent' key missing, try to map from 'type' (Observer compatibility)
+        if not intent:
+             i_type = intent_meta.get("type", "UNKNOWN")
+             if "LATENCY" in i_type or "delay" in str(intent_meta.get("metric")).lower():
+                 intent = "LATENCY_P95"
+             elif "THROUGHPUT" in i_type:
+                 intent = "THR_DL"
+             else:
+                 intent = "LATENCY_P95" # Default default
+
+        k = f"{intent}:{scope}"
+        if should_log(LOG_BANDIT):
+             logger.debug(f"[CACHE_KEY] Generated key '{k}' from meta: {intent_meta}")
+        return k
 
     def context_key(self, intent_meta: Dict[str,Any], situation: str) -> str:
         """Enhanced cache key including network situation."""
@@ -172,9 +206,15 @@ class CacheLibrary:
             arr[:] = arr[:self.max_per_key]
 
     def add_contextual(self, intent_meta: Dict[str,Any], playbook: Playbook, score: float, situation: str):
-        """Add playbook with context situation."""
+        if not intent_meta:
+            return
+
+        # Add to general store (for backward compatibility/initialization)
+        k = self.key(intent_meta)
+        self.add(intent_meta, playbook, score)
+
         if not BANDIT_AVAILABLE:
-            return self.add(intent_meta, playbook, score)
+            return
         
         k = self.context_key(intent_meta, situation)
         arr = self.context_store.setdefault(k, [])
@@ -186,6 +226,7 @@ class CacheLibrary:
     def sample(self, intent_meta: Dict[str,Any], m=2) -> List[Playbook]:
         k = self.key(intent_meta)
         arr = self.store.get(k, [])
+        
         if not arr:
             return []
         take = min(m, len(arr))
@@ -276,10 +317,12 @@ class ProposerSampler:
                          cooldown_clock: Optional[Dict[Tuple[str,str,str], int]] = None,
                          cache: Optional[CacheLibrary] = None,
                          intent_meta: Optional[Dict[str,Any]] = None,
-                         epsilon: float = 0.1) -> List[Playbook]:
+                         epsilon: float = 0.1,
+                         situation: str = "normal") -> List[Playbook]:
         """Original playbook sampling (fallback/compatibility)."""
         cooldown_clock = cooldown_clock or {}
-        seeds = cache.sample(intent_meta, m=min(2, N)) if cache else []
+        # NEW: Sample contextually based on Situation
+        seeds = cache.sample_contextual(intent_meta, situation, m=min(2, N)) if cache else []
         playbooks: List[Playbook] = []
 
         def random_playbook():
@@ -302,16 +345,28 @@ class ProposerSampler:
             return Playbook(actions)
 
         # Seeds (with mutation probability)
-        for s in seeds:
+        for i, s in enumerate(seeds):
             if random.random() < epsilon:
+                if should_log(LOG_BANDIT):
+                    logging.info(f"[BANDIT] Seed {i}: EXPLORING (mutating seed) with eps={epsilon:.2f}")
                 pb = ProposerSampler.mutate_playbook(s, action_space, cooldown_clock)
             else:
+                if should_log(LOG_BANDIT):
+                    logging.info(f"[BANDIT] Seed {i}: EXPLOITING (using seed) with eps={epsilon:.2f}")
                 pb = s
             playbooks.append(pb)
 
         # Fill to N
+        fill_count = 0
         while len(playbooks) < N:
+            if should_log(LOG_BANDIT):
+                # aggregated log to avoid spamming 5 times per step, or just log once
+                pass 
             playbooks.append(random_playbook())
+            fill_count += 1
+            
+        if fill_count > 0 and should_log(LOG_BANDIT):
+             logging.info(f"[BANDIT] Generated {fill_count} pure random playbooks (exploration/fill)")
         return playbooks
 
     @staticmethod
@@ -400,16 +455,25 @@ class ProposerSampler:
             return Playbook(new_actions)
 
         # Process seeds with contextual mutation
-        for s in seeds:
+        for i, s in enumerate(seeds):
             if random.random() < epsilon:
+                if should_log(LOG_BANDIT):
+                    logging.info(f"[BANDIT] Seed {i}: EXPLORING (mutating seed) with eps={epsilon:.2f}")
                 pb = contextual_mutate_playbook(s)
             else:
+                if should_log(LOG_BANDIT):
+                    logging.info(f"[BANDIT] Seed {i}: EXPLOITING (using seed) with eps={epsilon:.2f}")
                 pb = s
             playbooks.append(pb)
 
         # Fill remaining slots with contextual random playbooks
+        fill_count = 0
         while len(playbooks) < N:
             playbooks.append(contextual_random_playbook())
+            fill_count += 1
+            
+        if fill_count > 0 and should_log(LOG_BANDIT):
+             logging.info(f"[BANDIT] Generated {fill_count} contextual random playbooks (exploration/fill)")
         
         # Add metadata to track contextual generation
         for pb in playbooks:

@@ -2,7 +2,7 @@
   "slos": [
     {
       "metric": "DRB_PdcpSduDelayDl",
-      "target": 30.0,
+      "target": 25.0,
       "direction": "lower_better",
       "tolerance": 0.1,
       "priority": "high",
@@ -10,7 +10,7 @@
     },
     {
       "metric": "UE_DRB_PdcpSduDelayDl_UEID",
-      "target": 50.0,
+      "target": 45.0,
       "direction": "lower_better",
       "tolerance": 0.2,
       "priority": "medium",

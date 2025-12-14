@@ -24,6 +24,7 @@ LOG_OBSERVER = 5
 LOG_REWARD = 6
 LOG_KPI = 7
 LOG_COMMANDS = 8
+LOG_BANDIT = 9
 
 # Category names for display
 CATEGORY_NAMES = {
@@ -34,6 +35,8 @@ CATEGORY_NAMES = {
     LOG_OBSERVER: "OBSERVER",
     LOG_REWARD: "REWARD",
     LOG_KPI: "KPI",
+    LOG_COMMANDS: "COMMANDS",
+    LOG_BANDIT: "BANDIT",
 }
 
 # Global log level configuration
@@ -66,10 +69,10 @@ def parse_log_levels(level_str: str) -> Set[int]:
         part = part.strip()
         try:
             level = int(part)
-            if 1 <= level <= 7:
+            if 1 <= level <= 9:
                 levels.add(level)
             else:
-                logging.warning(f"Invalid log level: {level} (must be 1-7)")
+                logging.warning(f"Invalid log level: {level} (must be 1-9)")
         except ValueError:
             logging.warning(f"Invalid log level format: {part}")
     

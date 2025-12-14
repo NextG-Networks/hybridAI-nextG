@@ -22,14 +22,14 @@ from ain.loop.model_defs import SlateDQNetwork
 # Config (can be tweaked)
 # -----------------------------
 
-GAMMA = 0.99 # Discount factor (closer to one means longterm learning, lower means short term learning)
-LR = 1e-4
+GAMMA = 0.95 # Discount factor (closer to one means longterm learning, lower means short term learning)
+LR = 7e-5
 BATCH_SIZE = 128  # Increased from 64 to 128 for more stable gradients with Huber loss
 REPLAY_CAP = 100000
 TAU = 0.001 # Target network soft update rate
 EPS_START = 0.5 # Exploration vs exploitation
 EPS_END = 0.1  # Increased from 0.05 to maintain exploration in non-stationary environment
-EPS_DECAY_STEPS = 30000  # Slower decay to handle traffic spikes and random events
+EPS_DECAY_STEPS = 500  # Slower decay to handle traffic spikes and random events
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu") # Use GPU if available
 # -----------------------------
@@ -209,6 +209,10 @@ class SlateDQNPredictor:
         if np.any(np.isnan(r)) or np.any(np.isinf(r)):
             r = np.nan_to_num(r, nan=0.0, posinf=0.0, neginf=0.0)
         
+        # Normalize rewards to [-1, 1] range to stabilize gradients
+        # Since original rewards are clipped to [-20, 20], we divide by 20.0
+        r = r / 20.0
+        
         s = torch.tensor(s, dtype=torch.float32, device=DEVICE)
         p = torch.tensor(p, dtype=torch.float32, device=DEVICE)
         r = torch.tensor(r, dtype=torch.float32, device=DEVICE)
@@ -219,11 +223,11 @@ class SlateDQNPredictor:
 
         with torch.no_grad():
             q2 = self.target(s2, p)
-            # Clip Q values to prevent explosion
-            q2 = torch.clamp(q2, min=-10.0, max=10.0)
+            # Clip Q values to prevent explosion (normalized range)
+            q2 = torch.clamp(q2, min=-1.0, max=1.0)
             y = r + GAMMA * (1.0 - d) * q2
-            # Clip targets as well
-            y = torch.clamp(y, min=-10.0, max=10.0)
+            # Clip targets as well (normalized range)
+            y = torch.clamp(y, min=-1.0, max=1.0)
 
         # Use Huber loss (smooth_l1_loss) instead of MSE for robustness to outliers
         # This prevents gradient explosion from extreme reward values
@@ -239,7 +243,7 @@ class SlateDQNPredictor:
         loss_val = float(loss.item())
         q_mean = float(q.mean().item())
         y_mean = float(y.mean().item())
-        reward_mean = float(r.mean().item())
+        reward_mean = float(r.mean().item()) # Normalized reward mean
         
         self.optim.zero_grad()
         loss.backward()

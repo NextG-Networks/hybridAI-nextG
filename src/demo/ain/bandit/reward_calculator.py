@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional
 class SLORewardCalculator:
     """Enhanced SLO-based reward calculator for contextual bandit."""
     
-    def __init__(self, action_cost: float = 0.01, reward_clip: float = 2.0):
+    def __init__(self, action_cost: float = 0.01, reward_clip: float = 20.0):
         self.action_cost = action_cost
         self.reward_clip = reward_clip
         
@@ -108,7 +108,7 @@ class SLORewardCalculator:
                 else:
                     violation = 0.0
             
-            total_improvement += improvement * weight * 100.0
+            total_improvement += improvement * weight * 10.0
             total_violation += violation * weight
             weight_sum += weight
             

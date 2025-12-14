@@ -47,7 +47,7 @@ from ain.agents.actor_agent import ActorAgent
 import logging
 from ain.common.log_config import (
     set_log_levels, parse_log_levels, should_log, log_if_enabled,
-    LOG_LEARNING, LOG_INTENT, LOG_SCORING, LOG_DEVIATION, LOG_OBSERVER, LOG_REWARD, LOG_KPI,
+    LOG_LEARNING, LOG_INTENT, LOG_SCORING, LOG_DEVIATION, LOG_OBSERVER, LOG_REWARD, LOG_KPI, LOG_BANDIT,
     LOG_COMMANDS,
     CATEGORY_NAMES
 )
@@ -900,97 +900,142 @@ class XAppActorAgent:
         
     async def run(self):
         """Subscribe to scored playbooks and send commands."""
-        q = await self.bus.sub("predictor.scored")
+        q_scored = await self.bus.sub("predictor.scored")
+        q_intent = await self.bus.sub("intent.current")
+        
+        active_intent = False
         
         while True:
-            msg = await q.get()
-            scored = msg.payload.get("scored", [])
-            if not scored:
-                logger.warning("No scored playbooks received")
-                continue
-            
-            # Get best playbook
-            best_pb, best_q = max(scored, key=lambda t: t[1])
-            logger.info(f"Best playbook selected with Q={best_q:.3f}")
-            
-            # Save playbook
-            payload = self.actor.make_payload(best_pb)
-            self.actor.save_payload(payload)
-            logger.info(f"Saved playbook: {payload['playbook_id']}")
-            
-            # Convert to commands with mappings
-            meid = self.default_meid
-            cell_to_node_map = getattr(self.tcp_server, 'cell_to_node_map', {})
-            ue_to_node_map = getattr(self.tcp_server, 'ue_to_node_map', {})
-            ue_to_cell_map = getattr(self.tcp_server, 'ue_to_cell_map', {})
-            default_node_id = self.node_id
-            
-            # Log available mappings for debugging
-            logger.info(f"Available mappings - cells: {list(cell_to_node_map.keys())}, UEs: {list(ue_to_node_map.keys())[:5]}..., default_node_id: {default_node_id}")
-            
-            commands = self.converter.playbook_to_commands(
-                best_pb, 
-                meid, 
-                default_node_id,
-                cell_to_node_map=cell_to_node_map,
-                ue_to_node_map=ue_to_node_map,
-                ue_to_cell_map=ue_to_cell_map
+            done, pending = await asyncio.wait(
+                [asyncio.create_task(q_scored.get()), asyncio.create_task(q_intent.get())],
+                return_when=asyncio.FIRST_COMPLETED
             )
             
-            logger.info(f"Converted playbook to {len(commands)} command(s)")
+            for t in done:
+                msg = t.result()
+                
+                if msg.topic == "intent.current":
+                    # Update active intent state
+                    intent = msg.payload
+                    # Intent is active if it's a non-empty dictionary
+                    was_active = active_intent
+                    active_intent = bool(intent and isinstance(intent, dict))
+                    if active_intent != was_active:
+                        if active_intent:
+                            logger.info(f"[ACTOR] Intent ACTIVATED: {intent.get('intent_id')}")
+                        else:
+                            logger.info(f"[ACTOR] Intent WITHDRAWN - halting command execution")
+                    
+                elif msg.topic == "predictor.scored":
+                    scored = msg.payload.get("scored", [])
+                    if not scored:
+                        continue
+                    
+                    # COMMAND GATEWAY: Check if we have an active intent
+                    if not active_intent:
+                        if should_log(LOG_COMMANDS):
+                            logger.warning(f"[ACTOR] Ignoring scored playbook - No active intent")
+                        continue
+                    
+                    # Get best playbook
+                    best_pb, best_q = max(scored, key=lambda t: t[1])
+                    logger.info(f"Best playbook selected with Q={best_q:.3f}")
+                    
+                    # Save playbook
+                    payload = self.actor.make_payload(best_pb)
+                    self.actor.save_payload(payload)
+                    logger.info(f"Saved playbook: {payload['playbook_id']}")
+                    
+                    # Convert to commands with mappings
+                    meid = self.default_meid
+                    cell_to_node_map = getattr(self.tcp_server, 'cell_to_node_map', {})
+                    ue_to_node_map = getattr(self.tcp_server, 'ue_to_node_map', {})
+                    ue_to_cell_map = getattr(self.tcp_server, 'ue_to_cell_map', {})
+                    default_node_id = self.node_id
+                    
+                    # Log available mappings for debugging
+                    logger.info(f"Available mappings - cells: {list(cell_to_node_map.keys())}, UEs: {list(ue_to_node_map.keys())[:5]}..., default_node_id: {default_node_id}")
+                    
+                    commands = self.converter.playbook_to_commands(
+                        best_pb, 
+                        meid, 
+                        default_node_id,
+                        cell_to_node_map=cell_to_node_map,
+                        ue_to_node_map=ue_to_node_map,
+                        ue_to_cell_map=ue_to_cell_map
+                    )
+                    
+                    logger.info(f"Converted playbook to {len(commands)} command(s)")
+                    
+                    if not self.tcp_server.commands_enabled:
+                        logger.info(f"[COMMANDS DISABLED] Would send {len(commands)} command(s) but commands are disabled")
+                        # Still publish the event for logging/tracking
+                        await self.bus.pub("actor.apply", make_msg(
+                            "actor.apply", "APPLY", "actor.apply.v1",
+                            {"playbook": best_pb, "q": best_q, "commands": commands, "commands_enabled": False}
+                        ))
+                        # We used to return here, but with logic change we should continue loop
+                        continue
+                    
+                    # Check if intent is MONITORING (idle)
+                    # If type is MONITORING or target is 0.0, it means we are in withdrawal/monitoring state
+                    if active_intent and (intent.get("type") == "MONITORING" or intent.get("target") == 0.0):
+                         if step % 10 == 0:
+                             print(f"[AI Loop] In MONITORING state (no active intent). Skipping action generation.")
+                         # Still update observer state to keep history for baseline learning
+                         time.sleep(1.0) # Sleep and continue
+                         step += 1
+                         continue
+
+                    # NEW: Enhanced proposer with contextual intelligence
+                    # print(f"[Proposer] Generating {CANDIDATE_N} candidate playbooks (ε={predictor.epsilon():.3f})...")
+                    if commands:
+                        # Send to all connected clients
+                        connected_clients = list(self.tcp_server.clients.keys())
+                        if not connected_clients:
+                            logger.warning("No clients connected, cannot send commands")
+                        else:
+                            for client_id in connected_clients:
+                                # Use meid from map if available
+                                meid = self.tcp_server.meid_map.get(client_id, self.default_meid)
+                                # Update commands with correct meid
+                                for i, cmd in enumerate(commands):
+                                    cmd["meid"] = meid
+                                    
+                                    if should_log(LOG_COMMANDS):
+                                        logger.info(f"Sending command {i+1}/{len(commands)}: {cmd.get('cmd', {}).get('cmd', 'unknown')} to node {cmd.get('cmd', {}).get('node', 'unknown')}")
+                                    
+                                    success = await self.tcp_server.send_command(client_id, cmd)
+                                    if not success:
+                                        logger.error(f"Failed to send command to {client_id}")
+                                    
+                                    # Add 2 second cooldown between commands (except for the last one)
+                                    if i < len(commands) - 1:
+                                        if should_log(LOG_COMMANDS):
+                                            logger.info(f"Waiting 5 seconds before next command...")
+                                        await asyncio.sleep(10.0)
+                    else:
+                        logger.warning("No commands generated from playbook")
+                    
+                    # Publish actor.apply event
+                    await self.bus.pub("actor.apply", make_msg(
+                        "actor.apply", "APPLY", "actor.apply.v1",
+                        {"playbook": best_pb, "q": best_q, "commands": commands}
+                    ))
             
-            if not self.tcp_server.commands_enabled:
-                logger.info(f"[COMMANDS DISABLED] Would send {len(commands)} command(s) but commands are disabled")
-                # Still publish the event for logging/tracking
-                await self.bus.pub("actor.apply", make_msg(
-                    "actor.apply", "APPLY", "actor.apply.v1",
-                    {"playbook": best_pb, "q": best_q, "commands": commands, "commands_enabled": False}
-                ))
-                return
-            
-            if commands:
-                # Send to all connected clients
-                connected_clients = list(self.tcp_server.clients.keys())
-                if not connected_clients:
-                    logger.warning("No clients connected, cannot send commands")
-                else:
-                    for client_id in connected_clients:
-                        # Use meid from map if available
-                        meid = self.tcp_server.meid_map.get(client_id, self.default_meid)
-                        # Update commands with correct meid
-                        # Update commands with correct meid
-                        for i, cmd in enumerate(commands):
-                            cmd["meid"] = meid
-                            
-                            if should_log(LOG_COMMANDS):
-                                logger.info(f"Sending command {i+1}/{len(commands)}: {cmd.get('cmd', {}).get('cmd', 'unknown')} to node {cmd.get('cmd', {}).get('node', 'unknown')}")
-                            
-                            success = await self.tcp_server.send_command(client_id, cmd)
-                            if not success:
-                                logger.error(f"Failed to send command to {client_id}")
-                            
-                            # Add 2 second cooldown between commands (except for the last one)
-                            if i < len(commands) - 1:
-                                if should_log(LOG_COMMANDS):
-                                    logger.info(f"Waiting 5 seconds before next command...")
-                                await asyncio.sleep(10.0)
-            else:
-                logger.warning("No commands generated from playbook")
-            
-            # Publish actor.apply event
-            await self.bus.pub("actor.apply", make_msg(
-                "actor.apply", "APPLY", "actor.apply.v1",
-                {"playbook": best_pb, "q": best_q, "commands": commands}
-            ))
+            # Cancel pending tasks
+            for t in pending:
+                t.cancel()
 
 
 class ObserverBridge:
     """Bridge between membus and RLObserver (file-based)."""
     
-    def __init__(self, bus: MemBus, observer: RLObserver, temp_file: Path):
+    def __init__(self, bus: MemBus, observer: RLObserver, temp_file: Path, knowledge_base: Optional[CacheLibrary] = None):
         self.bus = bus
         self.observer = observer
         self.temp_file = temp_file
+        self.knowledge_base = knowledge_base
         self.last_playbook = None
         # Feature accumulation: merge KPIs from fragments using node_id as primary key
         # Key format: "node_{node_id}" for gNB-level, "cell_{cell_id}" for cell-specific, "ue_{ue_id}" for UE-specific
@@ -1013,15 +1058,17 @@ class ObserverBridge:
     async def _periodic_process_accumulated(self):
         """Periodically check and process accumulated KPIs even if no new KPI arrives."""
         while True:
-            await asyncio.sleep(0.5)  # Check every 0.5 seconds
-            current_time = datetime.now(timezone.utc).timestamp()
+            await asyncio.sleep(0.1)  # 100ms processing interval
             
-            # Process any accumulated KPIs that meet criteria
-            for accumulation_key, acc_kpi in list(self.accumulated_kpis.items()):
+            # Process accumulated KPIs
+            # We iterate over a copy of keys to avoid modification during iteration
+            for accumulation_key in list(self.accumulated_kpis.keys()):
+                acc_kpi = self.accumulated_kpis[accumulation_key] # Get the actual accumulated KPI
                 acc_cell_metrics = acc_kpi["CellMetrics"]
                 cell_id = acc_cell_metrics.get('cell_id', 'unknown')
                 available_features = [k for k in self.observer.features if k in acc_cell_metrics and acc_cell_metrics[k] is not None]
                 completeness = len(available_features) / len(self.observer.features) if self.observer.features else 0.0
+                current_time = datetime.now(timezone.utc).timestamp() # Moved inside loop to ensure fresh time for each key
                 time_since_start = current_time - self.accumulation_timestamps.get(accumulation_key, current_time)
                 last_processed = self.last_processed_time.get(accumulation_key, 0)
                 time_since_last_process = current_time - last_processed
@@ -1069,6 +1116,33 @@ class ObserverBridge:
                     os.replace(temp_file_tmp, self.temp_file)
                     try:
                         state = self.observer.step(self.last_playbook)
+                        
+                        # NEW: Update knowledge base if reward is good
+                        last_reward = getattr(self.observer, 'last_reward', None)
+                        
+                        has_reward = last_reward is not None
+                        has_pb = self.last_playbook is not None
+                        has_kb = self.knowledge_base is not None
+
+                        if has_reward and has_pb and has_kb:
+                            # Threshold for "Good" playbook. 
+                            # Rewards are now [-0.3, 1.6]. So > 0.5 is a reasonable threshold for "This actually helped".
+                            if last_reward > 0.5:
+                                intent_dict = self.observer.intent.__dict__
+                                # Also need situation for context
+                                situation = getattr(self.observer, 'current_context', {}).get('situation', 'normal')
+                                logger.info(f"[CACHE] Adding successful playbook to cache (reward={last_reward:.4f})")
+                                self.knowledge_base.add_contextual(intent_dict, self.last_playbook, last_reward, situation)
+                            else:
+                                 # Diagnostic log (DEBUG level normally, but INFO for now to debug user issue)
+                                 # No counter filter now
+                                 logger.info(f"[CACHE] Skipped cache update: reward={last_reward:.4f} <= 0.5")
+                        else:
+                            # Log checking
+                            if getattr(self, '_log_missing_counter', 0) % 5 == 0:
+                                logger.info(f"[CACHE] Prerequisites missing: Reward={last_reward}, PB={'OK' if has_pb else 'NONE'}, KB={'OK' if has_kb else 'NONE'}")
+                            self._log_missing_counter = getattr(self, '_log_missing_counter', 0) + 1
+
                         if state is not None:
                             import numpy as np
                             state_list = state.tolist() if hasattr(state, 'tolist') else state
@@ -1078,6 +1152,7 @@ class ObserverBridge:
                             ))
                     except Exception as e:
                         logger.debug(f"Error in periodic processing: {e}")
+                        print(f"DEBUG_CACHE ERROR: {e}")
     
     async def run(self):
         """Subscribe to KPIs and update observer, publish state windows."""
@@ -1094,11 +1169,16 @@ class ObserverBridge:
         while True:
             msg = await q.get()
             kpi = msg.payload.get("kpi")
+            
+            
             if kpi:
                 # Accumulate features from fragments using node_id as primary key
                 cell_metrics = kpi.get('CellMetrics', {})
                 raw_cell_id = cell_metrics.get('cell_id', 'unknown')
                 current_time = datetime.now(timezone.utc).timestamp()
+                
+                # Extract node_id using robust logic
+                node_id = 'unknown'
                 
                 # Extract node_id from KPI (prefer Header, then CellMetrics, then default to 2 for gNB)
                 header = kpi.get('Header', {})
@@ -1292,20 +1372,6 @@ class ObserverBridge:
                     # Write accumulated KPI to observer's file (atomic write)
                     # Direct pass to observer (skip file I/O for performance)
                     try:
-                        # Log before calling observer.step() to diagnose
-                        if should_log(LOG_OBSERVER):
-                            logger.debug(f"[OBSERVER] Calling observer.step() with completeness={completeness:.1%}, buf_size={len(self.observer.buf)}/{self.observer.window}")
-                        
-                        # FORCE LOG (INFO) to diagnose
-                        if should_log(LOG_OBSERVER):
-                            logger.info(f"[OBSERVER-DEBUG] CellMetrics keys: {list(acc_kpi.get('CellMetrics', {}).keys())}")
-                            # Inspect the specific target metric
-                            tgt = "DRB_PdcpSduDelayDl"
-                            if tgt in acc_kpi.get("CellMetrics", {}):
-                                logger.info(f"[OBSERVER-DEBUG] {tgt} = {acc_kpi['CellMetrics'][tgt]}")
-                            else:
-                                logger.info(f"[OBSERVER-DEBUG] {tgt} NOT FOUND in CellMetrics")
-                            
                         # Pass kpi_dict directly to avoid file I/O latency
                         state = self.observer.step(self.last_playbook, kpi_dict=acc_kpi)
                         if state is not None:
@@ -1325,15 +1391,70 @@ class ObserverBridge:
                             else:
                                 shape_info = "unknown"
                             
+                            # Extract situation for context-aware agents
+                            situation = "normal"
+                            curr_ctx = getattr(self.observer, 'current_context', None)
+                            if curr_ctx:
+                                if isinstance(curr_ctx, dict):
+                                    situation = curr_ctx.get('situation', 'normal')
+                                else:
+                                    situation = getattr(curr_ctx, 'situation', 'normal')
+
                             await self.bus.pub("kpi.window", make_msg(
                                 "kpi.window", "STATE_WINDOW", "kpi.window.v1",
                                 {
                                     "state": state_list,
                                     "reward": 0.0,  # Observer computes reward internally
+                                    "situation": situation, # Broadcast situation for Proposer
                                 }
                             ))
                             if should_log(LOG_OBSERVER):
                                 logger.info(f"[OBSERVER] Published state window to membus (shape: {shape_info})")
+
+                            # NEW: Update knowledge base if reward is good (Moved from periodic loop)
+                            last_reward = getattr(self.observer, 'last_reward', None)
+                            
+                            if last_reward is not None and self.last_playbook is not None and self.knowledge_base is not None:
+                                # Threshold for "Good" playbook. 
+                                # Rewards are now [-0.3, 1.6]. So > 0.5 is a reasonable threshold.
+                                if last_reward > 0.5:
+                                    intent_dict = self.observer.intent.__dict__.copy() # Use copy to avoid modifying original
+                                    # Handle NetworkContext object vs dict
+                                    curr_ctx = getattr(self.observer, 'current_context', None)
+                                    scope = {}
+                                    if isinstance(curr_ctx, dict):
+                                        situation = curr_ctx.get('situation', 'normal')
+                                        scope = curr_ctx.get('scope', {})
+                                    else:
+                                        situation = getattr(curr_ctx, 'situation', 'normal')
+                                        scope = getattr(curr_ctx, 'scope', {})
+                                    
+                                    # Fallback: Populate scope from accumulated KPI if missing in context
+                                    if not scope and acc_kpi:
+                                        # Try to get cell_id from CellMetrics
+                                        cell_metrics = acc_kpi.get('CellMetrics', {})
+                                        kpi_cell_id = cell_metrics.get('cell_id')
+                                        
+                                        # Verify this cell_id is valid (starts with CELL_)
+                                        if kpi_cell_id and str(kpi_cell_id).startswith('CELL_'):
+                                            scope = {'cell_id': kpi_cell_id}
+                                            # Optional: Add region if available (hardcoded for now to match reasoner)
+                                            # scope['region'] = 'A' 
+                                        elif kpi_cell_id == 'unknown' and 'CELL_001' in CELLS: # Fallback to configured cell
+                                             # This handles the case where xApp hasn't seen cell ID yet but we know what we are controlling
+                                             scope = {'cell_id': CELLS.split(',')[0]}
+
+                                    
+                                    # Inject scope into intent_dict for correct key generation
+                                    intent_dict['scope'] = scope
+                                    
+                                    
+                                    logger.info(f"[CACHE] Adding successful playbook to cache (reward={last_reward:.4f})")
+                                    self.knowledge_base.add_contextual(intent_dict, self.last_playbook, last_reward, situation)
+                                else:
+                                     # Diagnostic log
+                                     if should_log(LOG_BANDIT):
+                                         logger.info(f"[CACHE] Skipped cache update: reward={last_reward:.4f} <= 0.5")
                         else:
                             if should_log(LOG_OBSERVER):
                                 logger.debug(f"[OBSERVER] Observer returned None state - window may not be full yet (buf size: {len(self.observer.buf)})")
@@ -1382,14 +1503,18 @@ class ObserverBridge:
         while True:
             msg = await q.get()
             rl_intent = msg.payload
-            # Update observer's intent
+            # Check if intent is MONITORING (idle)
+            # If type is MONITORING or target is 0.0, it means we are in withdrawal/monitoring state
+            # This check should be done in the main loop that consumes the intent, not here.
+            # This method's sole purpose is to update the observer's intent.
+            
             self.observer.intent = Intent(
                 type=rl_intent.get("type", "REDUCE_LATENCY"),
                 metric=rl_intent.get("metric", "DRB_PdcpSduDelayDl"),  # Use actual CSV metric name
                 target=float(rl_intent.get("target", 40.0)),
                 direction=rl_intent.get("direction", "lower_better"),
                 action_cost=float(rl_intent.get("action_cost", 0.01)),
-                reward_clip=float(rl_intent.get("reward_clip", 2.0)),
+                reward_clip=float(rl_intent.get("reward_clip", 20.0)),
             )
             logger.info(f"Observer intent updated: {self.observer.intent}")
 
@@ -1562,7 +1687,7 @@ async def run_ai_loop_with_membus(
     predictor_agent = PredictorAgent(bus, predictor)
     
     # 5. Observer Bridge (kpi.raw → observer → kpi.window)
-    observer_bridge = ObserverBridge(bus, observer, temp_kpi_file)
+    observer_bridge = ObserverBridge(bus, observer, temp_kpi_file, knowledge_base=knowledge_base)
     
     # Setup checkpoint saving
     online_checkpoint = "models/qnet_online.pt"

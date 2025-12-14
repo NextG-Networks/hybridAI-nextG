@@ -50,10 +50,10 @@ def to_proposer_meta(net_intent: Dict[str, Any]) -> Dict[str, Any]:
 def to_rl_intent(net_intent: Dict[str, Any]) -> Dict[str, Any]:
     slo = net_intent.get("slo", {})
     if "latency_ms" in slo:
-        return {"type": "REDUCE_LATENCY", "metric": "delay_p95_ms", "target": float(slo["latency_ms"]), "direction": "lower_better", "action_cost": 0.01, "reward_clip": 2.0}
+        return {"type": "REDUCE_LATENCY", "metric": "delay_p95_ms", "target": float(slo["latency_ms"]), "direction": "lower_better", "action_cost": 0.01, "reward_clip": 20.0}
     else:
         tgt = float(slo.get("thr_dl_bps", 50e6))
-        return {"type": "INCREASE_THROUGHPUT", "metric": "thr_dl_bps", "target": tgt, "direction": "higher_better", "action_cost": 0.01, "reward_clip": 2.0}
+        return {"type": "INCREASE_THROUGHPUT", "metric": "thr_dl_bps", "target": tgt, "direction": "higher_better", "action_cost": 0.01, "reward_clip": 20.0}
 
 
 def create_network_intent_from_deviation(dev: Dict[str, Any], use_llm: bool = True) -> Dict[str, Any]:

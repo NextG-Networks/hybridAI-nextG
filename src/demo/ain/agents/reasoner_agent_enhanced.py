@@ -312,6 +312,15 @@ class EnhancedReasonerAgent:
                     await self.bus.pub("intent.current", make_msg(
                         "intent.current", "INTENT", "intent.v1", {}
                     ))
+                    # Also publish clear signal to RL observer
+                    await self.bus.pub("intent.rl", make_msg(
+                        "intent.rl", "RL_INTENT", "rl_intent.v1", {
+                            "type": "MONITORING",
+                            "metric": "none",
+                            "target": 0.0,
+                            "direction": "none"
+                        }
+                    ))
                 
                 logger.info(f"[STATE] WITHDRAWAL -> MONITORING")
                 self.state = IntentState.MONITORING
@@ -356,7 +365,7 @@ class EnhancedReasonerAgent:
                 target=float(target),
                 direction=slo["direction"],
                 action_cost=0.01,
-                reward_clip=2.0,
+                reward_clip=20.0,
             )
             
             # Store current intent

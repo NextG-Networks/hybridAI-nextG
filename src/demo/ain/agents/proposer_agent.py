@@ -58,6 +58,12 @@ class ProposerAgent:
                     logger.info(f"[PLAYBOOK] Have both intent and state, generating playbooks...")
                 
                 try:
+                    # Extract situation (if available in state message)
+                    # Use .get() on pending_state assuming it's a dict, otherwise default
+                    situation = "normal"
+                    if isinstance(pending_state, dict):
+                         situation = pending_state.get("situation", "normal")
+                    
                     # Convert intent to proposer meta format
                     # Map intent type to proposer intent tag
                     intent_type = self.intent.get("type", "REDUCE_LATENCY")
@@ -91,7 +97,8 @@ class ProposerAgent:
                         K=PLAYBOOK_K,
                         epsilon=epsilon,
                         intent_meta=intent_meta, 
-                        cache=cache
+                        cache=cache,
+                        situation=situation
                     )
                     
                     # Log playbook details

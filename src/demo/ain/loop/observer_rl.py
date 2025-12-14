@@ -31,7 +31,7 @@ class Intent:
     target: float             # e.g., 40.0
     direction: str = "lower_better"  # "lower_better" | "higher_better"
     action_cost: float = 0.01        # penalty per action in playbook
-    reward_clip: float = 2.0         # clip absolute reward
+    reward_clip: float = 20.0         # clip absolute reward
 
 
 class RLObserver:
@@ -629,7 +629,14 @@ class RLObserver:
         prev_metrics = merged_prev_metrics
         curr_metrics = merged_curr_metrics
         
+        # Check if this was a NOOP/idle action
+        is_noop = False
+        actions = getattr(last_playbook, "actions", [])
+        if len(actions) == 1 and actions[0].type == "REPORTING":
+            is_noop = True
+
         if should_log(LOG_REWARD):
+            # Log general info at INFO level
             logger.info(f"[REWARD] Computing reward: enable_multi_metric={self.enable_multi_metric_reward}, "
                        f"has_slo_config={self.slo_config is not None}, "
                        f"actions_len={actions_len}")
@@ -965,6 +972,10 @@ class RLObserver:
                 r = self._compute_enhanced_reward(self.last_kpi_raw, kpi, last_playbook)
             else:
                 r = self._compute_reward(self.last_kpi_raw, kpi, len(getattr(last_playbook, "actions", [])))
+            
+            # Store for external access (e.g. by ObserverBridge to update Cache)
+            self.last_reward = r
+            
             t_reward = time.time() - t0
             
             t0 = time.time()

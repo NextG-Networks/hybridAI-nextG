@@ -1056,7 +1056,7 @@ async def run_ai_loop(
                 target=float(rl_cfg["target"]),
                 direction=rl_cfg["direction"],
                 action_cost=float(rl_cfg.get("action_cost", 0.01)),
-                reward_clip=float(rl_cfg.get("reward_clip", 2.0)),
+                reward_clip=float(rl_cfg.get("reward_clip", 20.0)),
             )
             observer.intent = new_intent
             logger.info(f"Intent set: {observer.intent} (scope={intent_meta['scope']})")

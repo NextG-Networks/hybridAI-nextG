@@ -1,0 +1,357 @@
+==========================================
+Starting AI System
+==========================================
+Host: 0.0.0.0
+Port: 6000
+Target Metric: DRB_PdcpSduDelayDl
+Target Value: 40.0
+Cells: CELL_001
+Slices: SLICE_A
+Steps: 1000
+Log Level: 8,2,6,9
+Save Loss History: true
+Plot Loss: true
+==========================================
+2025-12-14 14:06:24,162 - root - INFO - [LOG_CONFIG] Enabled log categories: INTENT, REWARD, COMMANDS, BANDIT
+2025-12-14 14:06:24,162 - __main__ - INFO - ==========================================
+2025-12-14 14:06:24,162 - __main__ - INFO - Log Level Configuration:
+2025-12-14 14:06:24,162 - __main__ - INFO -   Enabled categories: INTENT, REWARD, COMMANDS, BANDIT
+2025-12-14 14:06:24,163 - __main__ - INFO -   Total: 4/7 categories
+2025-12-14 14:06:24,163 - __main__ - INFO - ==========================================
+2025-12-14 14:06:24,163 - __main__ - INFO - xApp TCP server started on 0.0.0.0:6000
+2025-12-14 14:06:24,958 - __main__ - INFO - ✓ Resumed training from online checkpoint: models/qnet_online.pt (step=1242)
+2025-12-14 14:06:24,958 - ain.agents.reasoner_agent_enhanced - INFO - [SLO] Loaded 2 SLOs from configs/slos.json
+2025-12-14 14:06:24,958 - ain.agents.reasoner_agent_enhanced - INFO - [SLO]   DRB_PdcpSduDelayDl: target=30.0, direction=lower_better
+2025-12-14 14:06:24,958 - ain.agents.reasoner_agent_enhanced - INFO - [SLO]   UE_DRB_PdcpSduDelayDl_UEID: target=50.0, direction=lower_better
+2025-12-14 14:06:24,958 - __main__ - INFO - Loaded SLO config from configs/slos.json for multi-metric reward calculation
+2025-12-14 14:06:24,958 - __main__ - INFO - Created gNB-level MinirocketAgent: metric=DRB_PdcpSduDelayDl, model=models/minirocket_xapp_gnb.joblib
+2025-12-14 14:06:24,958 - __main__ - INFO - Created UE-level MinirocketAgent: metric=UE_DRB_PdcpSduDelayDl_UEID, model=models/minirocket_xapp_ue.joblib
+2025-12-14 14:06:24,959 - ain.agents.reasoner_agent_enhanced - INFO - [SLO] Loaded 2 SLOs from configs/slos.json
+2025-12-14 14:06:24,959 - ain.agents.reasoner_agent_enhanced - INFO - [SLO]   DRB_PdcpSduDelayDl: target=30.0, direction=lower_better
+2025-12-14 14:06:24,959 - ain.agents.reasoner_agent_enhanced - INFO - [SLO]   UE_DRB_PdcpSduDelayDl_UEID: target=50.0, direction=lower_better
+2025-12-14 14:06:24,962 - __main__ - INFO - ✓ Resumed loss history from models/loss_history_stable.json (1242 entries)
+2025-12-14 14:06:24,962 - __main__ - INFO - Starting AI loop with membus architecture (matching system design)...
+2025-12-14 14:06:25,113 - __main__ - INFO - [DASHBOARD] Dashboard enabled - HTTP: http://localhost:8080, WebSocket: ws://localhost:8081
+2025-12-14 14:06:25,113 - ain.dashboard.dashboard_server - INFO - [DASHBOARD] Starting WebSocket server on ws://0.0.0.0:8081
+2025-12-14 14:06:25,115 - websockets.server - INFO - server listening on 0.0.0.0:8081
+2025-12-14 14:06:25,115 - ain.dashboard.dashboard_server - INFO - [DASHBOARD] Dashboard available at http://0.0.0.0:8081
+2025-12-14 14:06:25,115 - ain.dashboard.http_server - INFO - [DASHBOARD] HTTP server started at http://0.0.0.0:8080
+2025-12-14 14:06:28,940 - __main__ - INFO - xApp client connected: 130.240.5.18:57778
+2025-12-14 14:06:29,148 - __main__ - INFO - [DEBUG] Raw KPI message structure from 130.240.5.18:57778:
+2025-12-14 14:06:29,148 - __main__ - INFO -   Full message keys: ['type', 'meid', 'kpi']
+2025-12-14 14:06:29,149 - __main__ - INFO -   KPI data keys: ['serviceModel', 'format', 'node_id', 'measurements', 'ues', 'pmContainers']
+2025-12-14 14:06:29,149 - __main__ - INFO -   KPI data sample (first 500 chars): {'serviceModel': 'KPM', 'format': 'F1', 'node_id': 2, 'measurements': [{'name': 'DRB.PdcpSduDelayDl', 'value': 31.288328}], 'ues': [{'ueId': '3030303031', 'node_id': 3, 'measurements': [{'name': 'DRB.PdcpSduDelayDl.UEID', 'value': 14.352172}, {'name': 'DRB.BlerDl.UEID', 'value': 0.0}]}, {'ueId': '3030303032', 'node_id': 4, 'measurements': [{'name': 'DRB.PdcpSduDelayDl.UEID', 'value': 48.224485}, {'name': 'DRB.BlerDl.UEID', 'value': 0.0}]}], 'pmContainers': 1}
+2025-12-14 14:06:29,149 - __main__ - INFO -   Measurements array length: 1
+2025-12-14 14:06:29,149 - __main__ - INFO -   First measurement: {'name': 'DRB.PdcpSduDelayDl', 'value': 31.288328}
+2025-12-14 14:06:43,764 - ain.agents.reasoner_agent_enhanced - INFO - [BASELINE] Learned baseline for DRB_PdcpSduDelayDl: mean=25.19, p50=7.78, p90=60.90
+2025-12-14 14:07:30,115 - ain.agents.reasoner_agent_enhanced - INFO - [STATE] MONITORING -> ACTIVATING (SLO violation: DRB_PdcpSduDelayDl=52.50)
+2025-12-14 14:07:30,115 - ain.agents.reasoner_agent_enhanced - INFO - [INTENT] Created intent: REDUCE_LATENCY for DRB_PdcpSduDelayDl (SLO_target=30.00, current=52.50, baseline_p50=12.90)
+2025-12-14 14:07:30,115 - ain.agents.reasoner_agent_enhanced - INFO - [STATE] ACTIVATING -> ASSURANCE
+2025-12-14 14:07:30,115 - ain.agents.reasoner_agent_enhanced - INFO - [INTENT] Active Intents: [{"intent_id": "intent_DRB_PdcpSduDelayDl_1765717650.115803", "metric": "DRB_PdcpSduDelayDl", "target": 30.0, "direction": "lower_better", "type": "REDUCE_LATENCY", "slo_id": "slo_latency_gnb", "scope": {"cell_id": "CELL_001", "region": "A"}}]
+2025-12-14 14:07:30,116 - ain.agents.proposer_agent - INFO - [INTENT] Received intent update: type=REDUCE_LATENCY, metric=DRB_PdcpSduDelayDl
+2025-12-14 14:07:30,116 - __main__ - INFO - Observer intent updated: Intent(type='REDUCE_LATENCY', metric='DRB_PdcpSduDelayDl', target=30.0, direction='lower_better', action_cost=0.01, reward_clip=20.0)
+2025-12-14 14:07:30,116 - __main__ - INFO - [ACTOR] Intent ACTIVATED: intent_DRB_PdcpSduDelayDl_1765717650.115803
+2025-12-14 14:07:30,742 - ain.agents.reasoner_agent_enhanced - INFO - [INTENT] Active Intents: [{"intent_id": "intent_DRB_PdcpSduDelayDl_1765717650.115803", "metric": "DRB_PdcpSduDelayDl", "target": 30.0, "direction": "lower_better", "type": "REDUCE_LATENCY", "slo_id": "slo_latency_gnb", "scope": {"cell_id": "CELL_001", "region": "A"}}]
+2025-12-14 14:07:30,742 - root - INFO - [BANDIT] Generated 5 pure random playbooks (exploration/fill)
+2025-12-14 14:07:30,749 - __main__ - INFO - Best playbook selected with Q=-4.160
+2025-12-14 14:07:30,749 - __main__ - INFO - Saved playbook: pb_20251214T130730749224Z
+2025-12-14 14:07:30,749 - __main__ - INFO - Available mappings - cells: ['CELL_1111'], UEs: ['3030303031', '3030303032']..., default_node_id: 0
+2025-12-14 14:07:30,749 - __main__ - INFO - Action PRB_WEIGHT (SLICE) will use node_id=0
+2025-12-14 14:07:30,749 - __main__ - INFO - PRB_WEIGHT command for all nodes (node not specified), bandwidth=120
+2025-12-14 14:07:30,749 - __main__ - INFO - Converted playbook to 1 command(s)
+2025-12-14 14:07:30,749 - __main__ - INFO - Sending command 1/1: set-bandwidth to node unknown
+2025-12-14 14:07:30,749 - __main__ - INFO - Sent command to 130.240.5.18:57778: set-bandwidth
+2025-12-14 14:07:33,055 - ain.loop.observer_rl - INFO - [REWARD] Computing reward: enable_multi_metric=True, has_slo_config=True, actions_len=1
+2025-12-14 14:07:33,055 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in prev: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:33,055 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in curr: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:33,055 - ain.loop.observer_rl - INFO - [REWARD] Intent metric: DRB_PdcpSduDelayDl, target: 30.0
+2025-12-14 14:07:33,055 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in prev: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:33,055 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in curr: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:33,055 - ain.loop.observer_rl - INFO - [REWARD] Using multi-metric reward calculation with 2 SLO metrics
+2025-12-14 14:07:33,055 - ain.loop.observer_rl - INFO - [REWARD]   DRB_PdcpSduDelayDl: prev=52.488321, curr=52.520974, target=30.0, weight=1.0
+2025-12-14 14:07:33,055 - ain.loop.observer_rl - INFO - [REWARD]   UE_DRB_PdcpSduDelayDl_UEID: prev=N/A, curr=N/A, target=50.0, weight=0.5
+2025-12-14 14:07:33,055 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (before action cost): -0.756920
+2025-12-14 14:07:33,056 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (after action cost 0.0100): -0.766920
+2025-12-14 14:07:33,056 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward: -0.7669, metrics_used=1/2, weight_sum=1.00
+2025-12-14 14:07:33,056 - ain.loop.observer_rl - INFO - [REWARD]   Metrics used: DRB_PdcpSduDelayDl(prev=52.49,curr=52.52)
+2025-12-14 14:07:33,056 - ain.loop.observer_rl - WARNING - [REWARD]   Metrics missing: UE_DRB_PdcpSduDelayDl_UEID
+2025-12-14 14:07:33,056 - ain.loop.observer_rl - INFO - [REWARD]   Violations: DRB_PdcpSduDelayDl=52.52 (target=30.00)
+2025-12-14 14:07:33,056 - root - INFO - [BANDIT] Generated 5 pure random playbooks (exploration/fill)
+2025-12-14 14:07:33,061 - __main__ - INFO - Best playbook selected with Q=0.420
+2025-12-14 14:07:33,062 - __main__ - INFO - Saved playbook: pb_20251214T130733061817Z
+2025-12-14 14:07:33,062 - __main__ - INFO - Available mappings - cells: ['CELL_1111'], UEs: ['3030303031', '3030303032']..., default_node_id: 0
+2025-12-14 14:07:33,062 - __main__ - WARNING - No node mapping found for configured cell CELL_001, using actual cell CELL_1111 with node_id=2. Available cells: ['CELL_1111']
+2025-12-14 14:07:33,062 - __main__ - INFO - Action TX_POWER (CELL) will use node_id=2
+2025-12-14 14:07:33,062 - __main__ - INFO - TX_POWER command for gNB node 2, txPower=41.0dBm
+2025-12-14 14:07:33,062 - __main__ - INFO - Converted playbook to 1 command(s)
+2025-12-14 14:07:33,062 - __main__ - INFO - Sending command 1/1: set-enb-txpower to node 2
+2025-12-14 14:07:33,062 - __main__ - INFO - Sent command to 130.240.5.18:57778: set-enb-txpower
+2025-12-14 14:07:33,650 - ain.agents.reasoner_agent_enhanced - INFO - [INTENT] Active Intents: [{"intent_id": "intent_DRB_PdcpSduDelayDl_1765717650.115803", "metric": "DRB_PdcpSduDelayDl", "target": 30.0, "direction": "lower_better", "type": "REDUCE_LATENCY", "slo_id": "slo_latency_gnb", "scope": {"cell_id": "CELL_001", "region": "A"}}]
+2025-12-14 14:07:35,511 - ain.loop.observer_rl - INFO - [REWARD] Computing reward: enable_multi_metric=True, has_slo_config=True, actions_len=1
+2025-12-14 14:07:35,511 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in prev: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:35,511 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in curr: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:35,511 - ain.loop.observer_rl - INFO - [REWARD] Intent metric: DRB_PdcpSduDelayDl, target: 30.0
+2025-12-14 14:07:35,511 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in prev: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:35,511 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in curr: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:35,511 - ain.loop.observer_rl - INFO - [REWARD] Using multi-metric reward calculation with 2 SLO metrics
+2025-12-14 14:07:35,511 - ain.loop.observer_rl - INFO - [REWARD]   DRB_PdcpSduDelayDl: prev=52.520974, curr=52.487328, target=30.0, weight=1.0
+2025-12-14 14:07:35,511 - ain.loop.observer_rl - INFO - [REWARD]   UE_DRB_PdcpSduDelayDl_UEID: prev=N/A, curr=N/A, target=50.0, weight=0.5
+2025-12-14 14:07:35,511 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (before action cost): -0.742851
+2025-12-14 14:07:35,511 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (after action cost 0.0100): -0.752851
+2025-12-14 14:07:35,511 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward: -0.7529, metrics_used=1/2, weight_sum=1.00
+2025-12-14 14:07:35,511 - ain.loop.observer_rl - INFO - [REWARD]   Metrics used: DRB_PdcpSduDelayDl(prev=52.52,curr=52.49)
+2025-12-14 14:07:35,511 - ain.loop.observer_rl - WARNING - [REWARD]   Metrics missing: UE_DRB_PdcpSduDelayDl_UEID
+2025-12-14 14:07:35,512 - ain.loop.observer_rl - INFO - [REWARD]   Violations: DRB_PdcpSduDelayDl=52.49 (target=30.00)
+2025-12-14 14:07:35,512 - ain.agents.reasoner_agent_enhanced - INFO - [INTENT] Active Intents: [{"intent_id": "intent_DRB_PdcpSduDelayDl_1765717650.115803", "metric": "DRB_PdcpSduDelayDl", "target": 30.0, "direction": "lower_better", "type": "REDUCE_LATENCY", "slo_id": "slo_latency_gnb", "scope": {"cell_id": "CELL_001", "region": "A"}}]
+2025-12-14 14:07:35,513 - root - INFO - [BANDIT] Generated 5 pure random playbooks (exploration/fill)
+2025-12-14 14:07:35,517 - __main__ - INFO - Best playbook selected with Q=-3.053
+2025-12-14 14:07:35,517 - __main__ - INFO - Saved playbook: pb_20251214T130735517671Z
+2025-12-14 14:07:35,517 - __main__ - INFO - Available mappings - cells: ['CELL_1111'], UEs: ['3030303031', '3030303032']..., default_node_id: 0
+2025-12-14 14:07:35,517 - __main__ - WARNING - No node mapping found for configured cell CELL_001, using actual cell CELL_1111 with node_id=2. Available cells: ['CELL_1111']
+2025-12-14 14:07:35,517 - __main__ - INFO - Action TX_POWER (CELL) will use node_id=2
+2025-12-14 14:07:35,517 - __main__ - INFO - TX_POWER command for gNB node 2, txPower=58.0dBm
+2025-12-14 14:07:35,518 - __main__ - INFO - Converted playbook to 1 command(s)
+2025-12-14 14:07:35,518 - __main__ - INFO - Sending command 1/1: set-enb-txpower to node 2
+2025-12-14 14:07:35,518 - __main__ - INFO - Sent command to 130.240.5.18:57778: set-enb-txpower
+2025-12-14 14:07:36,122 - ain.agents.reasoner_agent_enhanced - INFO - [INTENT] Active Intents: [{"intent_id": "intent_DRB_PdcpSduDelayDl_1765717650.115803", "metric": "DRB_PdcpSduDelayDl", "target": 30.0, "direction": "lower_better", "type": "REDUCE_LATENCY", "slo_id": "slo_latency_gnb", "scope": {"cell_id": "CELL_001", "region": "A"}}]
+2025-12-14 14:07:37,546 - ain.loop.observer_rl - INFO - [REWARD] Computing reward: enable_multi_metric=True, has_slo_config=True, actions_len=1
+2025-12-14 14:07:37,547 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in prev: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:37,547 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in curr: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:37,547 - ain.loop.observer_rl - INFO - [REWARD] Intent metric: DRB_PdcpSduDelayDl, target: 30.0
+2025-12-14 14:07:37,547 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in prev: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:37,547 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in curr: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:37,547 - ain.loop.observer_rl - INFO - [REWARD] Using multi-metric reward calculation with 2 SLO metrics
+2025-12-14 14:07:37,547 - ain.loop.observer_rl - INFO - [REWARD]   DRB_PdcpSduDelayDl: prev=52.487328, curr=52.522057, target=30.0, weight=1.0
+2025-12-14 14:07:37,547 - ain.loop.observer_rl - INFO - [REWARD]   UE_DRB_PdcpSduDelayDl_UEID: prev=N/A, curr=N/A, target=50.0, weight=0.5
+2025-12-14 14:07:37,547 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (before action cost): -0.757352
+2025-12-14 14:07:37,547 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (after action cost 0.0100): -0.767352
+2025-12-14 14:07:37,547 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward: -0.7674, metrics_used=1/2, weight_sum=1.00
+2025-12-14 14:07:37,547 - ain.loop.observer_rl - INFO - [REWARD]   Metrics used: DRB_PdcpSduDelayDl(prev=52.49,curr=52.52)
+2025-12-14 14:07:37,547 - ain.loop.observer_rl - WARNING - [REWARD]   Metrics missing: UE_DRB_PdcpSduDelayDl_UEID
+2025-12-14 14:07:37,547 - ain.loop.observer_rl - INFO - [REWARD]   Violations: DRB_PdcpSduDelayDl=52.52 (target=30.00)
+2025-12-14 14:07:37,548 - root - INFO - [BANDIT] Generated 5 pure random playbooks (exploration/fill)
+2025-12-14 14:07:37,553 - __main__ - INFO - Best playbook selected with Q=-1.362
+2025-12-14 14:07:37,554 - __main__ - INFO - Saved playbook: pb_20251214T130737553946Z
+2025-12-14 14:07:37,554 - __main__ - INFO - Available mappings - cells: ['CELL_1111'], UEs: ['3030303031', '3030303032']..., default_node_id: 0
+2025-12-14 14:07:37,554 - __main__ - WARNING - No node mapping found for configured cell CELL_001, using actual cell CELL_1111 with node_id=2. Available cells: ['CELL_1111']
+2025-12-14 14:07:37,554 - __main__ - INFO - Action TX_POWER (CELL) will use node_id=2
+2025-12-14 14:07:37,554 - __main__ - INFO - TX_POWER command for gNB node 2, txPower=60.0dBm
+2025-12-14 14:07:37,554 - __main__ - WARNING - No node mapping found for configured cell CELL_001, using actual cell CELL_1111 with node_id=2. Available cells: ['CELL_1111']
+2025-12-14 14:07:37,554 - __main__ - INFO - Action MCS_CAP (CELL) will use node_id=2
+2025-12-14 14:07:37,554 - __main__ - INFO - MCS_CAP command for gNB node 2, mcs=24
+2025-12-14 14:07:37,554 - __main__ - INFO - Converted playbook to 2 command(s)
+2025-12-14 14:07:37,554 - __main__ - INFO - Sending command 1/2: set-enb-txpower to node 2
+2025-12-14 14:07:37,554 - __main__ - INFO - Sent command to 130.240.5.18:57778: set-enb-txpower
+2025-12-14 14:07:37,554 - __main__ - INFO - Waiting 5 seconds before next command...
+2025-12-14 14:07:38,671 - ain.agents.reasoner_agent_enhanced - INFO - [INTENT] Active Intents: [{"intent_id": "intent_DRB_PdcpSduDelayDl_1765717650.115803", "metric": "DRB_PdcpSduDelayDl", "target": 30.0, "direction": "lower_better", "type": "REDUCE_LATENCY", "slo_id": "slo_latency_gnb", "scope": {"cell_id": "CELL_001", "region": "A"}}]
+2025-12-14 14:07:39,688 - ain.loop.observer_rl - INFO - [REWARD] Computing reward: enable_multi_metric=True, has_slo_config=True, actions_len=1
+2025-12-14 14:07:39,688 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in prev: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:39,688 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in curr: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:39,688 - ain.loop.observer_rl - INFO - [REWARD] Intent metric: DRB_PdcpSduDelayDl, target: 30.0
+2025-12-14 14:07:39,688 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in prev: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:39,688 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in curr: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:39,688 - ain.loop.observer_rl - INFO - [REWARD] Using multi-metric reward calculation with 2 SLO metrics
+2025-12-14 14:07:39,688 - ain.loop.observer_rl - INFO - [REWARD]   DRB_PdcpSduDelayDl: prev=52.522057, curr=40.695465, target=30.0, weight=1.0
+2025-12-14 14:07:39,688 - ain.loop.observer_rl - INFO - [REWARD]   UE_DRB_PdcpSduDelayDl_UEID: prev=N/A, curr=N/A, target=50.0, weight=0.5
+2025-12-14 14:07:39,688 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (before action cost): 2.007810
+2025-12-14 14:07:39,688 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (after action cost 0.0100): 1.997810
+2025-12-14 14:07:39,688 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward: 1.9978, metrics_used=1/2, weight_sum=1.00
+2025-12-14 14:07:39,688 - ain.loop.observer_rl - INFO - [REWARD]   Metrics used: DRB_PdcpSduDelayDl(prev=52.52,curr=40.70)
+2025-12-14 14:07:39,688 - ain.loop.observer_rl - WARNING - [REWARD]   Metrics missing: UE_DRB_PdcpSduDelayDl_UEID
+2025-12-14 14:07:39,688 - ain.loop.observer_rl - INFO - [REWARD]   Violations: DRB_PdcpSduDelayDl=40.70 (target=30.00)
+2025-12-14 14:07:39,690 - root - INFO - [BANDIT] Generated 5 pure random playbooks (exploration/fill)
+2025-12-14 14:07:40,527 - ain.agents.reasoner_agent_enhanced - INFO - [STATE] ASSURANCE -> WITHDRAWAL (SLO met: DRB_PdcpSduDelayDl=5.22)
+2025-12-14 14:07:40,527 - ain.agents.reasoner_agent_enhanced - INFO - [INTENT] Clearing satisfied intent for DRB_PdcpSduDelayDl
+2025-12-14 14:07:40,527 - ain.agents.reasoner_agent_enhanced - INFO - [STATE] WITHDRAWAL -> MONITORING
+2025-12-14 14:07:40,528 - ain.agents.proposer_agent - INFO - [INTENT] Received intent update: type=UNKNOWN, metric=UNKNOWN
+2025-12-14 14:07:40,528 - __main__ - INFO - Observer intent updated: Intent(type='MONITORING', metric='none', target=0.0, direction='none', action_cost=0.01, reward_clip=20.0)
+2025-12-14 14:07:42,094 - ain.loop.observer_rl - INFO - [REWARD] Computing reward: enable_multi_metric=True, has_slo_config=True, actions_len=1
+2025-12-14 14:07:42,095 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in prev: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:42,095 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in curr: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:42,095 - ain.loop.observer_rl - INFO - [REWARD] Intent metric: none, target: 0.0
+2025-12-14 14:07:42,095 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in prev: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:42,095 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in curr: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:42,095 - ain.loop.observer_rl - INFO - [REWARD] Using multi-metric reward calculation with 2 SLO metrics
+2025-12-14 14:07:42,095 - ain.loop.observer_rl - INFO - [REWARD]   DRB_PdcpSduDelayDl: prev=40.695465, curr=52.537149, target=30.0, weight=1.0
+2025-12-14 14:07:42,095 - ain.loop.observer_rl - INFO - [REWARD]   UE_DRB_PdcpSduDelayDl_UEID: prev=N/A, curr=N/A, target=50.0, weight=0.5
+2025-12-14 14:07:42,095 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (before action cost): -3.661067
+2025-12-14 14:07:42,095 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (after action cost 0.0100): -3.671067
+2025-12-14 14:07:42,095 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward: -3.6711, metrics_used=1/2, weight_sum=1.00
+2025-12-14 14:07:42,095 - ain.loop.observer_rl - INFO - [REWARD]   Metrics used: DRB_PdcpSduDelayDl(prev=40.70,curr=52.54)
+2025-12-14 14:07:42,095 - ain.loop.observer_rl - WARNING - [REWARD]   Metrics missing: UE_DRB_PdcpSduDelayDl_UEID
+2025-12-14 14:07:42,095 - ain.loop.observer_rl - INFO - [REWARD]   Violations: DRB_PdcpSduDelayDl=52.54 (target=30.00)
+2025-12-14 14:07:44,540 - ain.loop.observer_rl - INFO - [REWARD] Computing reward: enable_multi_metric=True, has_slo_config=True, actions_len=1
+2025-12-14 14:07:44,540 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in prev: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:44,540 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in curr: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:44,540 - ain.loop.observer_rl - INFO - [REWARD] Intent metric: none, target: 0.0
+2025-12-14 14:07:44,540 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in prev: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:44,540 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in curr: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:44,540 - ain.loop.observer_rl - INFO - [REWARD] Using multi-metric reward calculation with 2 SLO metrics
+2025-12-14 14:07:44,540 - ain.loop.observer_rl - INFO - [REWARD]   DRB_PdcpSduDelayDl: prev=52.537149, curr=52.464703, target=30.0, weight=1.0
+2025-12-14 14:07:44,540 - ain.loop.observer_rl - INFO - [REWARD]   UE_DRB_PdcpSduDelayDl_UEID: prev=N/A, curr=N/A, target=50.0, weight=0.5
+2025-12-14 14:07:44,540 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (before action cost): -0.734344
+2025-12-14 14:07:44,540 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (after action cost 0.0100): -0.744344
+2025-12-14 14:07:44,540 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward: -0.7443, metrics_used=1/2, weight_sum=1.00
+2025-12-14 14:07:44,540 - ain.loop.observer_rl - INFO - [REWARD]   Metrics used: DRB_PdcpSduDelayDl(prev=52.54,curr=52.46)
+2025-12-14 14:07:44,540 - ain.loop.observer_rl - WARNING - [REWARD]   Metrics missing: UE_DRB_PdcpSduDelayDl_UEID
+2025-12-14 14:07:44,540 - ain.loop.observer_rl - INFO - [REWARD]   Violations: DRB_PdcpSduDelayDl=52.46 (target=30.00)
+2025-12-14 14:07:45,767 - ain.agents.reasoner_agent_enhanced - INFO - [STATE] MONITORING -> ACTIVATING (SLO violation: DRB_PdcpSduDelayDl=52.49)
+2025-12-14 14:07:45,767 - ain.agents.reasoner_agent_enhanced - INFO - [INTENT] Created intent: REDUCE_LATENCY for DRB_PdcpSduDelayDl (SLO_target=30.00, current=52.49, baseline_p50=13.06)
+2025-12-14 14:07:45,767 - ain.agents.reasoner_agent_enhanced - INFO - [STATE] ACTIVATING -> ASSURANCE
+2025-12-14 14:07:45,767 - ain.agents.reasoner_agent_enhanced - INFO - [INTENT] Active Intents: [{"intent_id": "intent_DRB_PdcpSduDelayDl_1765717665.767184", "metric": "DRB_PdcpSduDelayDl", "target": 30.0, "direction": "lower_better", "type": "REDUCE_LATENCY", "slo_id": "slo_latency_gnb", "scope": {"cell_id": "CELL_001", "region": "A"}}]
+2025-12-14 14:07:45,767 - ain.agents.proposer_agent - INFO - [INTENT] Received intent update: type=REDUCE_LATENCY, metric=DRB_PdcpSduDelayDl
+2025-12-14 14:07:45,767 - __main__ - INFO - Observer intent updated: Intent(type='REDUCE_LATENCY', metric='DRB_PdcpSduDelayDl', target=30.0, direction='lower_better', action_cost=0.01, reward_clip=20.0)
+2025-12-14 14:07:46,969 - ain.loop.observer_rl - INFO - [REWARD] Computing reward: enable_multi_metric=True, has_slo_config=True, actions_len=1
+2025-12-14 14:07:46,969 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in prev: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:46,969 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in curr: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:46,969 - ain.loop.observer_rl - INFO - [REWARD] Intent metric: DRB_PdcpSduDelayDl, target: 30.0
+2025-12-14 14:07:46,969 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in prev: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:46,969 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in curr: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:46,969 - ain.loop.observer_rl - INFO - [REWARD] Using multi-metric reward calculation with 2 SLO metrics
+2025-12-14 14:07:46,969 - ain.loop.observer_rl - INFO - [REWARD]   DRB_PdcpSduDelayDl: prev=52.464703, curr=22.715452, target=30.0, weight=1.0
+2025-12-14 14:07:46,969 - ain.loop.observer_rl - INFO - [REWARD]   UE_DRB_PdcpSduDelayDl_UEID: prev=N/A, curr=N/A, target=50.0, weight=0.5
+2025-12-14 14:07:46,969 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (before action cost): 5.953853
+2025-12-14 14:07:46,969 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (after action cost 0.0100): 5.943853
+2025-12-14 14:07:46,969 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward: 5.9439, metrics_used=1/2, weight_sum=1.00
+2025-12-14 14:07:46,969 - ain.loop.observer_rl - INFO - [REWARD]   Metrics used: DRB_PdcpSduDelayDl(prev=52.46,curr=22.72)
+2025-12-14 14:07:46,969 - ain.loop.observer_rl - WARNING - [REWARD]   Metrics missing: UE_DRB_PdcpSduDelayDl_UEID
+2025-12-14 14:07:46,969 - ain.loop.observer_rl - INFO - [REWARD]   All tracked SLOs met
+2025-12-14 14:07:46,969 - ain.agents.reasoner_agent_enhanced - INFO - [INTENT] Active Intents: [{"intent_id": "intent_DRB_PdcpSduDelayDl_1765717665.767184", "metric": "DRB_PdcpSduDelayDl", "target": 30.0, "direction": "lower_better", "type": "REDUCE_LATENCY", "slo_id": "slo_latency_gnb", "scope": {"cell_id": "CELL_001", "region": "A"}}]
+2025-12-14 14:07:46,970 - root - INFO - [BANDIT] Generated 5 pure random playbooks (exploration/fill)
+2025-12-14 14:07:47,555 - __main__ - INFO - Sending command 2/2: set-mcs to node 2
+2025-12-14 14:07:47,555 - __main__ - INFO - Sent command to 130.240.5.18:57778: set-mcs
+2025-12-14 14:07:47,555 - __main__ - INFO - Best playbook selected with Q=-1.276
+2025-12-14 14:07:47,556 - __main__ - INFO - Saved playbook: pb_20251214T130747555830Z
+2025-12-14 14:07:47,556 - __main__ - INFO - Available mappings - cells: ['CELL_1111'], UEs: ['3030303031', '3030303032']..., default_node_id: 0
+2025-12-14 14:07:47,556 - __main__ - WARNING - No node mapping found for configured cell CELL_001, using actual cell CELL_1111 with node_id=2. Available cells: ['CELL_1111']
+2025-12-14 14:07:47,556 - __main__ - INFO - Action MCS_CAP (CELL) will use node_id=2
+2025-12-14 14:07:47,556 - __main__ - INFO - MCS_CAP command for gNB node 2, mcs=12
+2025-12-14 14:07:47,556 - __main__ - INFO - Converted playbook to 1 command(s)
+2025-12-14 14:07:47,556 - __main__ - INFO - Sending command 1/1: set-mcs to node 2
+2025-12-14 14:07:47,556 - __main__ - INFO - Sent command to 130.240.5.18:57778: set-mcs
+2025-12-14 14:07:47,556 - __main__ - INFO - Best playbook selected with Q=-0.472
+2025-12-14 14:07:47,556 - __main__ - INFO - Saved playbook: pb_20251214T130747556528Z
+2025-12-14 14:07:47,556 - __main__ - INFO - Available mappings - cells: ['CELL_1111'], UEs: ['3030303031', '3030303032']..., default_node_id: 0
+2025-12-14 14:07:47,556 - __main__ - WARNING - No node mapping found for configured cell CELL_001, using actual cell CELL_1111 with node_id=2. Available cells: ['CELL_1111']
+2025-12-14 14:07:47,556 - __main__ - INFO - Action MCS_CAP (CELL) will use node_id=2
+2025-12-14 14:07:47,556 - __main__ - INFO - MCS_CAP command for gNB node 2, mcs=14
+2025-12-14 14:07:47,556 - __main__ - INFO - Converted playbook to 1 command(s)
+2025-12-14 14:07:47,556 - __main__ - INFO - Sending command 1/1: set-mcs to node 2
+2025-12-14 14:07:47,556 - __main__ - INFO - Sent command to 130.240.5.18:57778: set-mcs
+2025-12-14 14:07:49,213 - ain.loop.observer_rl - INFO - [REWARD] Computing reward: enable_multi_metric=True, has_slo_config=True, actions_len=1
+2025-12-14 14:07:49,213 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in prev: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:49,213 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in curr: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:49,213 - ain.loop.observer_rl - INFO - [REWARD] Intent metric: DRB_PdcpSduDelayDl, target: 30.0
+2025-12-14 14:07:49,213 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in prev: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:49,213 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in curr: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:49,213 - ain.loop.observer_rl - INFO - [REWARD] Using multi-metric reward calculation with 2 SLO metrics
+2025-12-14 14:07:49,213 - ain.loop.observer_rl - INFO - [REWARD]   DRB_PdcpSduDelayDl: prev=22.715452, curr=14.936466, target=30.0, weight=1.0
+2025-12-14 14:07:49,213 - ain.loop.observer_rl - INFO - [REWARD]   UE_DRB_PdcpSduDelayDl_UEID: prev=N/A, curr=N/A, target=50.0, weight=0.5
+2025-12-14 14:07:49,213 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (before action cost): 3.595762
+2025-12-14 14:07:49,213 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (after action cost 0.0100): 3.585762
+2025-12-14 14:07:49,213 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward: 3.5858, metrics_used=1/2, weight_sum=1.00
+2025-12-14 14:07:49,213 - ain.loop.observer_rl - INFO - [REWARD]   Metrics used: DRB_PdcpSduDelayDl(prev=22.72,curr=14.94)
+2025-12-14 14:07:49,213 - ain.loop.observer_rl - WARNING - [REWARD]   Metrics missing: UE_DRB_PdcpSduDelayDl_UEID
+2025-12-14 14:07:49,214 - ain.loop.observer_rl - INFO - [REWARD]   All tracked SLOs met
+2025-12-14 14:07:49,214 - ain.agents.reasoner_agent_enhanced - INFO - [INTENT] Active Intents: [{"intent_id": "intent_DRB_PdcpSduDelayDl_1765717665.767184", "metric": "DRB_PdcpSduDelayDl", "target": 30.0, "direction": "lower_better", "type": "REDUCE_LATENCY", "slo_id": "slo_latency_gnb", "scope": {"cell_id": "CELL_001", "region": "A"}}]
+2025-12-14 14:07:49,214 - root - INFO - [BANDIT] Generated 5 pure random playbooks (exploration/fill)
+2025-12-14 14:07:49,216 - __main__ - INFO - Best playbook selected with Q=0.207
+2025-12-14 14:07:49,216 - __main__ - INFO - Saved playbook: pb_20251214T130749216428Z
+2025-12-14 14:07:49,216 - __main__ - INFO - Available mappings - cells: ['CELL_1111'], UEs: ['3030303031', '3030303032']..., default_node_id: 0
+2025-12-14 14:07:49,216 - __main__ - WARNING - No node mapping found for configured cell CELL_001, using actual cell CELL_1111 with node_id=2. Available cells: ['CELL_1111']
+2025-12-14 14:07:49,216 - __main__ - INFO - Action TX_POWER (CELL) will use node_id=2
+2025-12-14 14:07:49,216 - __main__ - INFO - TX_POWER command for gNB node 2, txPower=34.0dBm
+2025-12-14 14:07:49,216 - __main__ - WARNING - No node mapping found for configured cell CELL_001, using actual cell CELL_1111 with node_id=2. Available cells: ['CELL_1111']
+2025-12-14 14:07:49,216 - __main__ - INFO - Action MCS_CAP (CELL) will use node_id=2
+2025-12-14 14:07:49,216 - __main__ - INFO - MCS_CAP command for gNB node 2, mcs=12
+2025-12-14 14:07:49,216 - __main__ - INFO - Converted playbook to 2 command(s)
+2025-12-14 14:07:49,216 - __main__ - INFO - Sending command 1/2: set-enb-txpower to node 2
+2025-12-14 14:07:49,217 - __main__ - INFO - Sent command to 130.240.5.18:57778: set-enb-txpower
+2025-12-14 14:07:49,217 - __main__ - INFO - Waiting 5 seconds before next command...
+2025-12-14 14:07:50,817 - ain.agents.reasoner_agent_enhanced - INFO - [STATE] ASSURANCE -> WITHDRAWAL (SLO met: DRB_PdcpSduDelayDl=4.25)
+2025-12-14 14:07:50,817 - ain.agents.reasoner_agent_enhanced - INFO - [INTENT] Clearing satisfied intent for DRB_PdcpSduDelayDl
+2025-12-14 14:07:50,817 - ain.agents.reasoner_agent_enhanced - INFO - [STATE] WITHDRAWAL -> MONITORING
+2025-12-14 14:07:50,817 - ain.agents.proposer_agent - INFO - [INTENT] Received intent update: type=UNKNOWN, metric=UNKNOWN
+2025-12-14 14:07:50,817 - __main__ - INFO - Observer intent updated: Intent(type='MONITORING', metric='none', target=0.0, direction='none', action_cost=0.01, reward_clip=20.0)
+2025-12-14 14:07:51,232 - ain.loop.observer_rl - INFO - [REWARD] Computing reward: enable_multi_metric=True, has_slo_config=True, actions_len=1
+2025-12-14 14:07:51,232 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in prev: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:51,232 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in curr: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:51,232 - ain.loop.observer_rl - INFO - [REWARD] Intent metric: none, target: 0.0
+2025-12-14 14:07:51,232 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in prev: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:51,232 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in curr: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:51,232 - ain.loop.observer_rl - INFO - [REWARD] Using multi-metric reward calculation with 2 SLO metrics
+2025-12-14 14:07:51,232 - ain.loop.observer_rl - INFO - [REWARD]   DRB_PdcpSduDelayDl: prev=14.936466, curr=4.25249, target=30.0, weight=1.0
+2025-12-14 14:07:51,232 - ain.loop.observer_rl - INFO - [REWARD]   UE_DRB_PdcpSduDelayDl_UEID: prev=N/A, curr=N/A, target=50.0, weight=0.5
+2025-12-14 14:07:51,232 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (before action cost): 7.510595
+2025-12-14 14:07:51,232 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (after action cost 0.0100): 7.500595
+2025-12-14 14:07:51,233 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward: 7.5006, metrics_used=1/2, weight_sum=1.00
+2025-12-14 14:07:51,233 - ain.loop.observer_rl - INFO - [REWARD]   Metrics used: DRB_PdcpSduDelayDl(prev=14.94,curr=4.25)
+2025-12-14 14:07:51,233 - ain.loop.observer_rl - WARNING - [REWARD]   Metrics missing: UE_DRB_PdcpSduDelayDl_UEID
+2025-12-14 14:07:51,233 - ain.loop.observer_rl - INFO - [REWARD]   All tracked SLOs met
+2025-12-14 14:07:53,401 - ain.loop.observer_rl - INFO - [REWARD] Computing reward: enable_multi_metric=True, has_slo_config=True, actions_len=1
+2025-12-14 14:07:53,401 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in prev: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:53,401 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in curr: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:53,401 - ain.loop.observer_rl - INFO - [REWARD] Intent metric: none, target: 0.0
+2025-12-14 14:07:53,401 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in prev: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:53,401 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in curr: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:53,401 - ain.loop.observer_rl - INFO - [REWARD] Using multi-metric reward calculation with 2 SLO metrics
+2025-12-14 14:07:53,401 - ain.loop.observer_rl - INFO - [REWARD]   DRB_PdcpSduDelayDl: prev=4.25249, curr=13.036563, target=30.0, weight=1.0
+2025-12-14 14:07:53,401 - ain.loop.observer_rl - INFO - [REWARD]   UE_DRB_PdcpSduDelayDl_UEID: prev=N/A, curr=N/A, target=50.0, weight=0.5
+2025-12-14 14:07:53,401 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (before action cost): -20.656305
+2025-12-14 14:07:53,401 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (after action cost 0.0100): -20.000000
+2025-12-14 14:07:53,402 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward: -20.0000, metrics_used=1/2, weight_sum=1.00
+2025-12-14 14:07:53,402 - ain.loop.observer_rl - INFO - [REWARD]   Metrics used: DRB_PdcpSduDelayDl(prev=4.25,curr=13.04)
+2025-12-14 14:07:53,402 - ain.loop.observer_rl - WARNING - [REWARD]   Metrics missing: UE_DRB_PdcpSduDelayDl_UEID
+2025-12-14 14:07:53,402 - ain.loop.observer_rl - INFO - [REWARD]   All tracked SLOs met
+2025-12-14 14:07:55,667 - ain.loop.observer_rl - INFO - [REWARD] Computing reward: enable_multi_metric=True, has_slo_config=True, actions_len=1
+2025-12-14 14:07:55,667 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in prev: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:55,667 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in curr: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:55,668 - ain.loop.observer_rl - INFO - [REWARD] Intent metric: none, target: 0.0
+2025-12-14 14:07:55,668 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in prev: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:55,668 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in curr: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:55,668 - ain.loop.observer_rl - INFO - [REWARD] Using multi-metric reward calculation with 2 SLO metrics
+2025-12-14 14:07:55,668 - ain.loop.observer_rl - INFO - [REWARD]   DRB_PdcpSduDelayDl: prev=13.036563, curr=14.541342, target=30.0, weight=1.0
+2025-12-14 14:07:55,668 - ain.loop.observer_rl - INFO - [REWARD]   UE_DRB_PdcpSduDelayDl_UEID: prev=N/A, curr=N/A, target=50.0, weight=0.5
+2025-12-14 14:07:55,668 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (before action cost): -1.154276
+2025-12-14 14:07:55,668 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (after action cost 0.0100): -1.164276
+2025-12-14 14:07:55,668 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward: -1.1643, metrics_used=1/2, weight_sum=1.00
+2025-12-14 14:07:55,668 - ain.loop.observer_rl - INFO - [REWARD]   Metrics used: DRB_PdcpSduDelayDl(prev=13.04,curr=14.54)
+2025-12-14 14:07:55,668 - ain.loop.observer_rl - WARNING - [REWARD]   Metrics missing: UE_DRB_PdcpSduDelayDl_UEID
+2025-12-14 14:07:55,668 - ain.loop.observer_rl - INFO - [REWARD]   All tracked SLOs met
+2025-12-14 14:07:57,795 - ain.loop.observer_rl - INFO - [REWARD] Computing reward: enable_multi_metric=True, has_slo_config=True, actions_len=1
+2025-12-14 14:07:57,795 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in prev: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:57,795 - ain.loop.observer_rl - INFO - [REWARD] Available metrics in curr: ['RRU_PrbUsedDl', 'UE_RRU_PrbUsedDl_UEID', 'TB_TotNbrDlInitial_16Qam', 'DRB_PdcpSduDelayDl', 'TB_TotNbrDlInitial_64Qam', 'TB_TotNbrDlInitial_Qpsk', 'UE_DRB_UEThpDl_UEID', 'DRB_MeanActiveUeDl']
+2025-12-14 14:07:57,795 - ain.loop.observer_rl - INFO - [REWARD] Intent metric: none, target: 0.0
+2025-12-14 14:07:57,795 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in prev: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:57,795 - ain.loop.observer_rl - INFO - [REWARD] CellMetrics keys in curr: ['DRB_PdcpSduDelayDl', 'cell_id', 'node_id', 'TB_TotNbrDlInitial_Qpsk', 'TB_TotNbrDlInitial_16Qam', 'TB_TotNbrDlInitial_64Qam', 'RRU_PrbUsedDl', 'DRB_MeanActiveUeDl', 'UE_DRB_UEThpDl_UEID', 'UE_RRU_PrbUsedDl_UEID']
+2025-12-14 14:07:57,795 - ain.loop.observer_rl - INFO - [REWARD] Using multi-metric reward calculation with 2 SLO metrics
+2025-12-14 14:07:57,795 - ain.loop.observer_rl - INFO - [REWARD]   DRB_PdcpSduDelayDl: prev=14.541342, curr=14.238618, target=30.0, weight=1.0
+2025-12-14 14:07:57,795 - ain.loop.observer_rl - INFO - [REWARD]   UE_DRB_PdcpSduDelayDl_UEID: prev=N/A, curr=N/A, target=50.0, weight=0.5
+2025-12-14 14:07:57,795 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (before action cost): 0.218591
+2025-12-14 14:07:57,795 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward (after action cost 0.0100): 0.208591
+2025-12-14 14:07:57,795 - ain.loop.observer_rl - INFO - [REWARD] Multi-metric reward: 0.2086, metrics_used=1/2, weight_sum=1.00
+2025-12-14 14:07:57,795 - ain.loop.observer_rl - INFO - [REWARD]   Metrics used: DRB_PdcpSduDelayDl(prev=14.54,curr=14.24)
+2025-12-14 14:07:57,795 - ain.loop.observer_rl - WARNING - [REWARD]   Metrics missing: UE_DRB_PdcpSduDelayDl_UEID
+2025-12-14 14:07:57,795 - ain.loop.observer_rl - INFO - [REWARD]   All tracked SLOs met
+2025-12-14 14:07:59,024 - __main__ - INFO - 💾 Saved final checkpoint to models/qnet_online.pt (step=1242)
+2025-12-14 14:07:59,036 - __main__ - INFO - xApp connection closed: 130.240.5.18:57778
+2025-12-14 14:07:59,036 - websockets.server - INFO - server closing
+2025-12-14 14:07:59,037 - websockets.server - INFO - server closed
+2025-12-14 14:07:59,040 - __main__ - INFO - 💾 Saved final checkpoint to models/qnet_online.pt (step=1242)
+[Proposer] Contextual bandit mode enabled
+[Observer] Contextual bandit mode enabled
+[Observer] Multi-metric reward enabled but no SLO config provided - using single metric
+[Observer] Contextual bandit mode enabled
+[Observer] Multi-metric reward enabled: tracking 2 SLO metrics
+==========================================
+Plotting loss function...
+==========================================
+Loaded 1242 loss entries from stable model: models/loss_history_stable.json
+Loss plot saved to: loss_plot.png
+Loss plot saved to: loss_plot.png
+==========================================
+Plotting loss function...
+==========================================
+Loaded 1242 loss entries from stable model: models/loss_history_stable.json
+Loss plot saved to: loss_plot.png
+Loss plot saved to: loss_plot.png
